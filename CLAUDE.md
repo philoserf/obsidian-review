@@ -8,7 +8,7 @@ Obsidian plugin to randomly review vault notes and track progress.
 
 ```bash
 bun install              # Install dependencies
-bun run dev              # Development build (no minification, includes sourcemaps)
+bun run dev              # Watch mode with auto-rebuild (no minification, sourcemaps)
 bun run build            # Production build (runs check first)
 bun run check            # Run all checks (typecheck + biome)
 bun run typecheck        # TypeScript type checking only
@@ -43,7 +43,6 @@ git push origin <version>
 ## Gotchas
 
 - `tsc --noEmit` reports errors for `obsidian`, `bun:test`, and `node:fs` modules — these resolve only inside the Obsidian/Bun runtime. CI passes because it installs all type packages. Local failures are expected.
-- `bun run dev` does NOT watch for changes (open issue). It builds once with dev settings and exits.
 - If issue descriptions (line numbers, function names, code structure) don't match the current codebase, stop and flag the discrepancy before proceeding with a fix.
 
 ## Testing
