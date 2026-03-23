@@ -300,38 +300,32 @@ class StatusBar {
 
     this.statusSpan.setText("Not reviewed");
     element.addClass("mod-clickable");
-    element.addEventListener("click", this.onClick);
+    plugin.registerDomEvent(element, "click", this.onClick);
 
     this.update();
   }
 
   update = () => {
-    if (!this.plugin.data.snapshot) {
-      this.setIsVisible(false);
-      return;
-    }
-
-    const activeFileStatus = this.plugin.getActiveFileStatus();
-    if (!activeFileStatus || activeFileStatus === "deleted") {
+    const status = this.plugin.getActiveFileStatus();
+    if (!status) {
       this.setIsVisible(false);
       return;
     }
 
     this.setIsVisible(this.plugin.data.showStatusBar);
 
-    if (activeFileStatus === "new") {
-      this.statusSpan.setText("New file");
-    } else if (activeFileStatus === "to_review") {
-      this.statusSpan.setText("Not reviewed");
-    } else if (activeFileStatus === "reviewed") {
+    if (status === "reviewed") {
       this.statusSpan.setText("Reviewed");
     } else {
-      this.statusSpan.setText("Unknown status");
+      this.statusSpan.setText("Not reviewed");
     }
   };
 
   private onClick = (event: MouseEvent) => {
-    const isReviewed = this.plugin.getActiveFileStatus() === "reviewed";
+    const status = this.plugin.getActiveFileStatus();
+    if (!status) return;
+
+    const isReviewed = status === "reviewed";
     const menu = new Menu();
 
     menu.addItem((item) => {
