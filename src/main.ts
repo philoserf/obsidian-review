@@ -76,15 +76,15 @@ export default class ReviewPlugin extends Plugin {
     this.statusBar = new StatusBar(this.addStatusBarItem(), this);
 
     this.addCommand({
-      id: "open-random-file",
-      name: "Open random not reviewed file",
+      id: "open-random-unreviewed",
+      name: "Open random unreviewed file",
       callback: () => {
         this.openRandomFile();
       },
     });
     this.addCommand({
-      id: "complete-review",
-      name: "Review file",
+      id: "mark-reviewed",
+      name: "Mark file as reviewed",
       checkCallback: (checking) => {
         if (checking) {
           return this.getActiveFileStatus() === "to_review";
@@ -94,8 +94,8 @@ export default class ReviewPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "complete-review-and-open-next",
-      name: "Review file and open next random file",
+      id: "mark-reviewed-and-open-next",
+      name: "Mark file as reviewed and open next",
       checkCallback: (checking) => {
         if (checking) {
           return this.getActiveFileStatus() === "to_review";
@@ -105,8 +105,8 @@ export default class ReviewPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "unreview-file",
-      name: "Unreview file",
+      id: "mark-unreviewed",
+      name: "Mark file as unreviewed",
       checkCallback: (checking) => {
         if (checking) {
           return this.getActiveFileStatus() === "reviewed";
@@ -560,7 +560,7 @@ class ReviewMenuModal extends SuggestModal<ReviewCommand> {
 
     if (!activeFile) {
       suggestions = [
-        { id: "open_random", name: "Open random not reviewed file" },
+        { id: "open_random", name: "Open random unreviewed file" },
       ];
     } else {
       const isReviewed =
@@ -568,17 +568,17 @@ class ReviewMenuModal extends SuggestModal<ReviewCommand> {
 
       if (isReviewed) {
         suggestions = [
-          { id: "open_random", name: "Open random not reviewed file" },
-          { id: "unreview", name: "Unreview file" },
+          { id: "open_random", name: "Open random unreviewed file" },
+          { id: "unreview", name: "Mark file as unreviewed" },
         ];
       } else {
         suggestions = [
           {
             id: "review_and_next",
-            name: "Review file and open next random file",
+            name: "Mark file as reviewed and open next",
           },
-          { id: "review", name: "Review file" },
-          { id: "open_random", name: "Open random not reviewed file" },
+          { id: "review", name: "Mark file as reviewed" },
+          { id: "open_random", name: "Open random unreviewed file" },
         ];
       }
     }
