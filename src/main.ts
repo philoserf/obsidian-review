@@ -13,36 +13,24 @@ import {
   TFolder,
 } from "obsidian";
 
-type Brand<K, T> = K & { __brand: T };
-
 type VaultReviewSettings = {
   snapshot?: Snapshot;
   settings: Settings;
 };
 
-type Snapshot = {
-  files: File[];
-  createdAt: Date;
+type SnapshotFile = {
+  path: string;
+  status: SnapshotFileStatus;
 };
 
-type File = Brand<
-  {
-    path: string;
-    status: SnapshotFileStatus;
-  },
-  "File"
->;
+type Snapshot = {
+  files: SnapshotFile[];
+  createdAt: Date;
+};
 
 type FileStatus = "new" | "to_review" | "reviewed" | "deleted";
 
 type SnapshotFileStatus = Exclude<FileStatus, "new">;
-
-const toFile = (file: File | TFile, status: SnapshotFileStatus): File => {
-  return {
-    path: file.path,
-    status: status,
-  } as File;
-};
 
 type Settings = {
   showStatusBar: boolean;
@@ -206,7 +194,10 @@ export default class VaultReviewPlugin extends Plugin {
     this.focusFile(randomFile, false);
   };
 
-  private focusFile = async (file: File, newLeaf: boolean | PaneType) => {
+  private focusFile = async (
+    file: SnapshotFile,
+    newLeaf: boolean | PaneType,
+  ) => {
     const targetFile = this.app.vault.getFileByPath(file.path);
 
     if (targetFile) {
@@ -228,7 +219,7 @@ export default class VaultReviewPlugin extends Plugin {
     file,
     openNext = false,
   }: {
-    file?: File;
+    file?: SnapshotFile;
     openNext?: boolean;
   } = {}) => {
     const activeFile = file ?? this.getActiveFile();
@@ -240,7 +231,10 @@ export default class VaultReviewPlugin extends Plugin {
 
     if (!snapshotFile) {
       new Notice("File was added to snapshot and marked as reviewed");
-      this.settings.snapshot?.files.push(toFile(activeFile, "reviewed"));
+      this.settings.snapshot?.files.push({
+        path: activeFile.path,
+        status: "reviewed",
+      });
     } else {
       snapshotFile.status = "reviewed";
     }
@@ -253,7 +247,7 @@ export default class VaultReviewPlugin extends Plugin {
     await this.saveSettings();
   };
 
-  unreviewFile = async (file?: File) => {
+  unreviewFile = async (file?: SnapshotFile) => {
     const activeFile = file ?? this.getActiveFile();
     if (!activeFile) {
       return;
@@ -263,7 +257,10 @@ export default class VaultReviewPlugin extends Plugin {
 
     if (!snapshotFile) {
       new Notice("File was added to snapshot and marked as not reviewed");
-      this.settings.snapshot?.files.push(toFile(activeFile, "to_review"));
+      this.settings.snapshot?.files.push({
+        path: activeFile.path,
+        status: "to_review",
+      });
     } else {
       snapshotFile.status = "to_review";
     }
@@ -447,7 +444,12 @@ class VaultReviewSettingTab extends PluginSettingTab {
                   (f) => f.path === file.path,
                 ),
             )
-            .map((file) => toFile(file, "to_review"));
+            .map(
+              (file): SnapshotFile => ({
+                path: file.path,
+                status: "to_review",
+              }),
+            );
           this.plugin.settings.snapshot?.files.push(...vaultFiles);
           this.plugin.statusBar.update();
           this.display();
@@ -459,9 +461,12 @@ class VaultReviewSettingTab extends PluginSettingTab {
         btn.setButtonText("Create snapshot");
         btn.setCta();
         btn.onClick(async () => {
-          const files = this.plugin.app.vault
-            .getMarkdownFiles()
-            .map((file) => toFile(file, "to_review"));
+          const files = this.plugin.app.vault.getMarkdownFiles().map(
+            (file): SnapshotFile => ({
+              path: file.path,
+              status: "to_review",
+            }),
+          );
           this.plugin.settings.snapshot = {
             files,
             createdAt: new Date(),
