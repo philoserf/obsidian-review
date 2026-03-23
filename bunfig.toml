@@ -1,0 +1,2 @@
+[test]
+preload = ["./src/__mocks__/obsidian.ts"]

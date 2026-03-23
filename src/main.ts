@@ -18,7 +18,7 @@ type PluginData = {
   showStatusBar: boolean;
 };
 
-type SnapshotFile = {
+export type SnapshotFile = {
   path: string;
   status: SnapshotFileStatus;
 };
@@ -30,11 +30,36 @@ type Snapshot = {
 
 type FileStatus = "new" | "to_review" | "reviewed" | "deleted";
 
-type SnapshotFileStatus = Exclude<FileStatus, "new">;
+export type SnapshotFileStatus = Exclude<FileStatus, "new">;
 
 const DEFAULT_SETTINGS: PluginData = {
   showStatusBar: true,
 };
+
+export function computeStats(
+  snapshotFiles: SnapshotFile[],
+  allVaultFilesCount: number,
+) {
+  const total = snapshotFiles.length;
+  const deleted = snapshotFiles.filter((f) => f.status === "deleted").length;
+  const reviewed = snapshotFiles.filter((f) => f.status === "reviewed").length;
+  const toReview = total - reviewed - deleted;
+  const active = total - deleted;
+  const percentCompleted = active ? Math.round((reviewed / active) * 100) : 0;
+  const percentDeleted = total ? Math.round((deleted / total) * 100) : 0;
+  const notInSnapshot = allVaultFilesCount - total + deleted;
+
+  return {
+    total,
+    deleted,
+    reviewed,
+    toReview,
+    active,
+    percentCompleted,
+    percentDeleted,
+    notInSnapshot,
+  };
+}
 
 export default class ReviewPlugin extends Plugin {
   data!: PluginData;
@@ -455,45 +480,21 @@ class ReviewSettingTab extends PluginSettingTab {
     if (snapshot) {
       containerEl.createDiv("snapshot-info", (div) => {
         const allFilesLength = this.plugin.app.vault.getMarkdownFiles().length;
-        const snapshotFilesLength = snapshot.files.length;
-        const deletedFilesLength = snapshot.files.filter(
-          (file) => file.status === "deleted",
-        ).length;
-        const notInSnapshotLength =
-          allFilesLength - snapshotFilesLength + deletedFilesLength;
-        const reviewedFilesLength = snapshot.files.filter(
-          (file) => file.status === "reviewed",
-        ).length;
-        const toReviewFilesLength =
-          snapshotFilesLength - reviewedFilesLength - deletedFilesLength;
-
-        const activeFilesLength = snapshotFilesLength - deletedFilesLength;
-        const percentSnapshotCompleted = activeFilesLength
-          ? Math.round((reviewedFilesLength / activeFilesLength) * 100)
-          : 0;
-        const percentSnapshotDeleted = snapshotFilesLength
-          ? Math.round((deletedFilesLength / snapshotFilesLength) * 100)
-          : 0;
+        const stats = computeStats(snapshot.files, allFilesLength);
 
         div.createEl("p").setText(`Markdown files in vault: ${allFilesLength}`);
 
         const inSnapshotEl = div.createEl("p", "in-snapshot");
+        inSnapshotEl.createSpan().setText(`In snapshot: ${stats.total}`);
+        inSnapshotEl.createSpan().setText(`To review: ${stats.toReview}`);
         inSnapshotEl
           .createSpan()
-          .setText(`In snapshot: ${snapshotFilesLength}`);
-        inSnapshotEl.createSpan().setText(`To review: ${toReviewFilesLength}`);
+          .setText(`Reviewed: ${stats.reviewed} (${stats.percentCompleted}%)`);
         inSnapshotEl
           .createSpan()
-          .setText(
-            `Reviewed: ${reviewedFilesLength} (${percentSnapshotCompleted}%)`,
-          );
-        inSnapshotEl
-          .createSpan()
-          .setText(
-            `Deleted: ${deletedFilesLength} (${percentSnapshotDeleted}%)`,
-          );
+          .setText(`Deleted: ${stats.deleted} (${stats.percentDeleted}%)`);
 
-        div.createEl("p").setText(`Not in snapshot: ${notInSnapshotLength}`);
+        div.createEl("p").setText(`Not in snapshot: ${stats.notInSnapshot}`);
       });
     }
 
