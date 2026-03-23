@@ -69,15 +69,12 @@ export default class ReviewPlugin extends Plugin {
   onload = async () => {
     await this.loadSettings();
 
-    // Ribbon
     this.addRibbonIcon("scan-eye", "Open review", () => {
       this.openFileStatusController();
     });
 
-    // Status bar
     this.statusBar = new StatusBar(this.addStatusBarItem(), this);
 
-    // Commands
     this.addCommand({
       id: "open-random-file",
       name: "Open random not reviewed file",
@@ -119,10 +116,8 @@ export default class ReviewPlugin extends Plugin {
       },
     });
 
-    // Settings
     this.addSettingTab(new ReviewSettingTab(this.app, this));
 
-    // Events
     this.registerEvent(this.app.vault.on("rename", this.handleFileRename));
     this.registerEvent(this.app.vault.on("delete", this.handleFileDelete));
     this.registerEvent(
@@ -335,14 +330,14 @@ export default class ReviewPlugin extends Plugin {
 class StatusBar {
   element: HTMLElement;
   plugin: ReviewPlugin;
-
-  isReviewed = false;
+  private statusSpan: Element;
 
   constructor(element: HTMLElement, plugin: ReviewPlugin) {
     this.element = element;
     this.plugin = plugin;
+    this.statusSpan = element.createSpan("status");
 
-    element.createSpan("status").setText("Not reviewed");
+    this.statusSpan.setText("Not reviewed");
     element.addClass("mod-clickable");
     element.addEventListener("click", this.onClick);
 
@@ -362,38 +357,34 @@ class StatusBar {
     }
 
     this.setIsVisible(this.plugin.data.showStatusBar);
-    this.isReviewed = activeFileStatus === "reviewed";
 
     if (activeFileStatus === "new") {
-      this.setText("New file");
+      this.statusSpan.setText("New file");
     } else if (activeFileStatus === "to_review") {
-      this.setText("Not reviewed");
+      this.statusSpan.setText("Not reviewed");
     } else if (activeFileStatus === "reviewed") {
-      this.setText("Reviewed");
+      this.statusSpan.setText("Reviewed");
     } else {
-      this.setText("Unknown status");
+      this.statusSpan.setText("Unknown status");
     }
   };
 
   private onClick = (event: MouseEvent) => {
+    const isReviewed = this.plugin.getActiveFileStatus() === "reviewed";
     const menu = new Menu();
 
     menu.addItem((item) => {
       item.setTitle("Reviewed");
-      item.setChecked(this.isReviewed);
+      item.setChecked(isReviewed);
       item.onClick(() => this.plugin.completeReview());
     });
     menu.addItem((item) => {
       item.setTitle("Not reviewed");
-      item.setChecked(!this.isReviewed);
+      item.setChecked(!isReviewed);
       item.onClick(() => this.plugin.unreviewFile());
     });
 
     menu.showAtMouseEvent(event);
-  };
-
-  private setText = (text: string) => {
-    this.element.getElementsByClassName("status")[0].setText(text);
   };
 
   private setIsVisible = (isVisible: boolean) => {
@@ -420,7 +411,7 @@ class ReviewSettingTab extends PluginSettingTab {
       .setName("Snapshot")
       .setDesc(
         snapshot?.createdAt
-          ? `Snapshot created on ${snapshot?.createdAt.toLocaleDateString()}.`
+          ? `Snapshot created on ${snapshot.createdAt.toLocaleDateString()}.`
           : "Create a snapshot of the vault.",
       );
     if (snapshot) {
@@ -534,12 +525,16 @@ class ConfirmSnapshotDeleteModal extends Modal {
         btn.setButtonText("Delete");
         btn.setWarning();
         btn.onClick(() => {
+          settled = true;
           resolve(true);
           this.close();
         });
       });
 
-    this.onClose = () => resolve(false);
+    let settled = false;
+    this.onClose = () => {
+      if (!settled) resolve(false);
+    };
   }
 }
 
