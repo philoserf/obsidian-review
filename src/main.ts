@@ -36,7 +36,7 @@ const DEFAULT_SETTINGS: PluginData = {
   showStatusBar: true,
 };
 
-export default class VaultReviewPlugin extends Plugin {
+export default class ReviewPlugin extends Plugin {
   data!: PluginData;
 
   statusBar!: StatusBar;
@@ -95,7 +95,7 @@ export default class VaultReviewPlugin extends Plugin {
     });
 
     // Settings
-    this.addSettingTab(new VaultReviewSettingTab(this.app, this));
+    this.addSettingTab(new ReviewSettingTab(this.app, this));
 
     // Events
     this.registerEvent(this.app.vault.on("rename", this.handleFileRename));
@@ -326,11 +326,11 @@ export default class VaultReviewPlugin extends Plugin {
 
 class StatusBar {
   element: HTMLElement;
-  plugin: VaultReviewPlugin;
+  plugin: ReviewPlugin;
 
   isReviewed = false;
 
-  constructor(element: HTMLElement, plugin: VaultReviewPlugin) {
+  constructor(element: HTMLElement, plugin: ReviewPlugin) {
     this.element = element;
     this.plugin = plugin;
 
@@ -393,10 +393,10 @@ class StatusBar {
   };
 }
 
-class VaultReviewSettingTab extends PluginSettingTab {
-  plugin: VaultReviewPlugin;
+class ReviewSettingTab extends PluginSettingTab {
+  plugin: ReviewPlugin;
 
-  constructor(app: App, plugin: VaultReviewPlugin) {
+  constructor(app: App, plugin: ReviewPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -581,9 +581,9 @@ const ACTIONS = {
 type Action = keyof typeof ACTIONS;
 
 class FileStatusControllerModal extends SuggestModal<Action> {
-  plugin: VaultReviewPlugin;
+  plugin: ReviewPlugin;
 
-  constructor(app: App, plugin: VaultReviewPlugin) {
+  constructor(app: App, plugin: ReviewPlugin) {
     super(app);
     this.plugin = plugin;
 
