@@ -20,7 +20,7 @@ type PluginData = {
 
 export type SnapshotFile = {
   path: string;
-  status: SnapshotFileStatus;
+  status: ReviewStatus;
 };
 
 type Snapshot = {
@@ -28,9 +28,9 @@ type Snapshot = {
   createdAt: Date;
 };
 
-type FileStatus = "new" | "to_review" | "reviewed" | "deleted";
+export type ReviewStatus = "to_review" | "reviewed" | "deleted";
 
-export type SnapshotFileStatus = Exclude<FileStatus, "new">;
+type DisplayStatus = ReviewStatus | "new";
 
 const DEFAULT_SETTINGS: PluginData = {
   showStatusBar: true,
@@ -70,7 +70,7 @@ export default class ReviewPlugin extends Plugin {
     await this.loadSettings();
 
     this.addRibbonIcon("scan-eye", "Open review", () => {
-      this.openFileStatusController();
+      this.openReviewMenu();
     });
 
     this.statusBar = new StatusBar(this.addStatusBarItem(), this);
@@ -90,7 +90,7 @@ export default class ReviewPlugin extends Plugin {
           return this.getActiveFileStatus() === "to_review";
         }
 
-        this.completeReview();
+        this.markReviewed();
       },
     });
     this.addCommand({
@@ -101,7 +101,7 @@ export default class ReviewPlugin extends Plugin {
           return this.getActiveFileStatus() === "to_review";
         }
 
-        this.completeReview({ openNext: true });
+        this.markReviewed({ openNext: true });
       },
     });
     this.addCommand({
@@ -112,7 +112,7 @@ export default class ReviewPlugin extends Plugin {
           return this.getActiveFileStatus() === "reviewed";
         }
 
-        this.unreviewFile();
+        this.markUnreviewed();
       },
     });
 
@@ -146,7 +146,7 @@ export default class ReviewPlugin extends Plugin {
     this.statusBar.update();
   };
 
-  getActiveFile = (): TFile | null => {
+  getActiveMarkdownFile = (): TFile | null => {
     const activeFile = this.app.workspace.getActiveFile();
     if (activeFile?.extension !== "md") {
       return null;
@@ -154,17 +154,12 @@ export default class ReviewPlugin extends Plugin {
     return activeFile;
   };
 
-  getSnapshotFile = (path?: string) => {
-    path = path ?? this.getActiveFile()?.path;
-    if (!path) {
-      return;
-    }
-
+  getSnapshotFile = (path: string) => {
     return this.data.snapshot?.files.find((f) => f.path === path);
   };
 
-  getActiveFileStatus = (): FileStatus | undefined => {
-    const activeFile = this.getActiveFile();
+  getActiveFileStatus = (): DisplayStatus | undefined => {
+    const activeFile = this.getActiveMarkdownFile();
     if (!activeFile) {
       return;
     }
@@ -179,13 +174,13 @@ export default class ReviewPlugin extends Plugin {
     );
   };
 
-  openFileStatusController = () => {
+  openReviewMenu = () => {
     if (!this.data.snapshot) {
       new Notice("Vault review snapshot is not created");
       return;
     }
 
-    new FileStatusControllerModal(this.app, this).open();
+    new ReviewMenuModal(this.app, this).open();
   };
 
   openRandomFile = () => {
@@ -225,14 +220,14 @@ export default class ReviewPlugin extends Plugin {
     }
   };
 
-  completeReview = async ({
+  markReviewed = async ({
     file,
     openNext = false,
   }: {
     file?: SnapshotFile;
     openNext?: boolean;
   } = {}) => {
-    const activeFile = file ?? this.getActiveFile();
+    const activeFile = file ?? this.getActiveMarkdownFile();
     if (!activeFile) {
       return;
     }
@@ -257,8 +252,8 @@ export default class ReviewPlugin extends Plugin {
     await this.saveSettings();
   };
 
-  unreviewFile = async (file?: SnapshotFile) => {
-    const activeFile = file ?? this.getActiveFile();
+  markUnreviewed = async (file?: SnapshotFile) => {
+    const activeFile = file ?? this.getActiveMarkdownFile();
     if (!activeFile) {
       return;
     }
@@ -376,12 +371,12 @@ class StatusBar {
     menu.addItem((item) => {
       item.setTitle("Reviewed");
       item.setChecked(isReviewed);
-      item.onClick(() => this.plugin.completeReview());
+      item.onClick(() => this.plugin.markReviewed());
     });
     menu.addItem((item) => {
       item.setTitle("Not reviewed");
       item.setChecked(!isReviewed);
-      item.onClick(() => this.plugin.unreviewFile());
+      item.onClick(() => this.plugin.markUnreviewed());
     });
 
     menu.showAtMouseEvent(event);
@@ -538,15 +533,15 @@ class ConfirmSnapshotDeleteModal extends Modal {
   }
 }
 
-type Suggestion = { id: string; name: string };
+type ReviewCommand = { id: string; name: string };
 
-const PLACEHOLDER: Record<string, string> = {
+const STATUS_DESCRIPTIONS: Record<string, string> = {
   new: "This file is not in snapshot",
   to_review: "This file is not reviewed",
   reviewed: "This file is reviewed",
 };
 
-class FileStatusControllerModal extends SuggestModal<Suggestion> {
+class ReviewMenuModal extends SuggestModal<ReviewCommand> {
   plugin: ReviewPlugin;
 
   constructor(app: App, plugin: ReviewPlugin) {
@@ -554,12 +549,14 @@ class FileStatusControllerModal extends SuggestModal<Suggestion> {
     this.plugin = plugin;
 
     const fileStatus = this.plugin.getActiveFileStatus();
-    this.setPlaceholder(fileStatus ? (PLACEHOLDER[fileStatus] ?? "") : "");
+    this.setPlaceholder(
+      fileStatus ? (STATUS_DESCRIPTIONS[fileStatus] ?? "") : "",
+    );
   }
 
-  getSuggestions = (query: string): Suggestion[] => {
-    const activeFile = this.plugin.getActiveFile();
-    let suggestions: Suggestion[];
+  getSuggestions = (query: string): ReviewCommand[] => {
+    const activeFile = this.plugin.getActiveMarkdownFile();
+    let suggestions: ReviewCommand[];
 
     if (!activeFile) {
       suggestions = [
@@ -591,23 +588,23 @@ class FileStatusControllerModal extends SuggestModal<Suggestion> {
     );
   };
 
-  renderSuggestion = (suggestion: Suggestion, el: HTMLElement) => {
+  renderSuggestion = (suggestion: ReviewCommand, el: HTMLElement) => {
     el.createEl("div", { text: suggestion.name });
   };
 
-  onChooseSuggestion = (suggestion: Suggestion) => {
+  onChooseSuggestion = (suggestion: ReviewCommand) => {
     switch (suggestion.id) {
       case "open_random":
         this.plugin.openRandomFile();
         break;
       case "review":
-        this.plugin.completeReview();
+        this.plugin.markReviewed();
         break;
       case "review_and_next":
-        this.plugin.completeReview({ openNext: true });
+        this.plugin.markReviewed({ openNext: true });
         break;
       case "unreview":
-        this.plugin.unreviewFile();
+        this.plugin.markUnreviewed();
         break;
     }
   };
