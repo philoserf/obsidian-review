@@ -15,6 +15,4 @@ if (!result.success) {
   process.exit(1);
 }
 
-if (watch) console.log("Watching for changes...");
-
 export {};
