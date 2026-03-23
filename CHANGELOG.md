@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.0
+
+**Breaking:** Review data model redesigned. Old snapshot data is discarded on upgrade.
+
+- Replace snapshot model with reviewed-paths set — vault is now the source of truth for file existence
+- Two states: reviewed or not reviewed (no more "new", "to_review", "deleted")
+- Add excluded folders setting with folder autocomplete
+- Fix status bar click listener leak — use `registerDomEvent` for automatic cleanup (#37)
+- Fix status bar menu not handling "new" file status (#34)
+- Fix deleted files accumulating in snapshot data forever (#35)
+- Fix linear scan for every file lookup — `Set` gives O(1) (#36)
+- Fix negative "not in snapshot" count (#33)
+- Fix `bun run dev` not watching for changes — use `bun --watch` (#38)
+- Fix TypeScript 6 compatibility — add `node` and `bun` types to tsconfig
+- Add `FolderSuggest` autocomplete component for excluded folder inputs
+- Update dev dependencies (biome, @types/bun, typescript)
+
 ## 1.2.0
 
 - Restrict release workflow tag filter to version tags only (#4)
