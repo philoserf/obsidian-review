@@ -259,43 +259,26 @@ export default class ReviewPlugin extends Plugin {
     await this.saveSettings();
   };
 
-  public deleteSnapshot = async ({
-    askForConfirmation = true,
+  deleteSnapshot = async ({
+    confirm = true,
   }: {
-    askForConfirmation?: boolean;
-  } = {}) => {
-    const { promise, resolve } = Promise.withResolvers<DeleteSnapshotResult>();
-
-    let settled = false;
-
-    const onDelete = async () => {
-      if (settled) return;
-      settled = true;
-      this.data.snapshot = undefined;
-      this.statusBar.update();
-      await this.saveSettings();
-      resolve("deleted");
-    };
-
-    const onCancel = () => {
-      if (settled) return;
-      settled = true;
-      resolve("cancelled");
-    };
-
-    if (askForConfirmation) {
-      const modal = new ConfirmSnapshotDeleteModal(
-        this.app,
-        onDelete,
-        onCancel,
-      );
-      modal.onClose = onCancel;
-      modal.open();
-    } else {
-      await onDelete();
+    confirm?: boolean;
+  } = {}): Promise<boolean> => {
+    if (confirm && !(await this.confirmDelete())) {
+      return false;
     }
 
-    return promise;
+    this.data.snapshot = undefined;
+    this.statusBar.update();
+    await this.saveSettings();
+    return true;
+  };
+
+  private confirmDelete = (): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const modal = new ConfirmSnapshotDeleteModal(this.app, resolve);
+      modal.open();
+    });
   };
 
   private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
@@ -528,14 +511,8 @@ class ReviewSettingTab extends PluginSettingTab {
   }
 }
 
-type DeleteSnapshotResult = "deleted" | "cancelled";
-
 class ConfirmSnapshotDeleteModal extends Modal {
-  constructor(
-    app: App,
-    onDelete: () => Promise<void> | void,
-    onCancel: () => Promise<void> | void,
-  ) {
+  constructor(app: App, resolve: (confirmed: boolean) => void) {
     super(app);
 
     this.setTitle("Delete snapshot?");
@@ -547,19 +524,21 @@ class ConfirmSnapshotDeleteModal extends Modal {
       )
       .addButton((btn) => {
         btn.setButtonText("Cancel");
-        btn.onClick(async () => {
-          await onCancel();
+        btn.onClick(() => {
+          resolve(false);
           this.close();
         });
       })
       .addButton((btn) => {
         btn.setButtonText("Delete");
         btn.setWarning();
-        btn.onClick(async () => {
-          await onDelete();
+        btn.onClick(() => {
+          resolve(true);
           this.close();
         });
       });
+
+    this.onClose = () => resolve(false);
   }
 }
 
