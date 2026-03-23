@@ -383,7 +383,7 @@ class StatusBar {
   };
 
   private setIsVisible = (isVisible: boolean) => {
-    this.element.toggleClass("hidden", !isVisible);
+    this.element.toggleClass("is-hidden", !isVisible);
   };
 }
 
