@@ -447,17 +447,17 @@ class ReviewSettingTab extends PluginSettingTab {
   }
 }
 
-class ConfirmSnapshotDeleteModal extends Modal {
+class ConfirmResetModal extends Modal {
   constructor(app: App, resolve: (confirmed: boolean) => void) {
     super(app);
 
-    this.setTitle("Delete snapshot?");
+    this.setTitle("Reset review?");
+
+    let settled = false;
 
     new Setting(this.contentEl)
       .setName("This action cannot be undone")
-      .setDesc(
-        "You will lose all progress and will need to create a new snapshot.",
-      )
+      .setDesc("All review progress will be lost.")
       .addButton((btn) => {
         btn.setButtonText("Cancel");
         btn.onClick(() => {
@@ -467,7 +467,7 @@ class ConfirmSnapshotDeleteModal extends Modal {
         });
       })
       .addButton((btn) => {
-        btn.setButtonText("Delete");
+        btn.setButtonText("Reset");
         btn.setWarning();
         btn.onClick(() => {
           settled = true;
@@ -476,7 +476,6 @@ class ConfirmSnapshotDeleteModal extends Modal {
         });
       });
 
-    let settled = false;
     this.onClose = () => {
       if (!settled) {
         settled = true;
@@ -488,12 +487,6 @@ class ConfirmSnapshotDeleteModal extends Modal {
 
 type ReviewCommand = { id: string; name: string };
 
-const STATUS_DESCRIPTIONS: Partial<Record<DisplayStatus, string>> = {
-  new: "This file is not in snapshot",
-  to_review: "This file is not reviewed",
-  reviewed: "This file is reviewed",
-};
-
 class ReviewMenuModal extends SuggestModal<ReviewCommand> {
   plugin: ReviewPlugin;
 
@@ -501,23 +494,24 @@ class ReviewMenuModal extends SuggestModal<ReviewCommand> {
     super(app);
     this.plugin = plugin;
 
-    const fileStatus = this.plugin.getActiveFileStatus();
-    this.setPlaceholder(
-      fileStatus ? (STATUS_DESCRIPTIONS[fileStatus] ?? "") : "",
-    );
+    const status = this.plugin.getActiveFileStatus();
+    if (status === "reviewed") {
+      this.setPlaceholder("This file is reviewed");
+    } else if (status === "not_reviewed") {
+      this.setPlaceholder("This file is not reviewed");
+    }
   }
 
   getSuggestions = (query: string): ReviewCommand[] => {
-    const activeFile = this.plugin.getActiveMarkdownFile();
+    const file = this.plugin.getActiveMarkdownFile();
     let suggestions: ReviewCommand[];
 
-    if (!activeFile) {
+    if (!file || !this.plugin.isFileEligible(file.path)) {
       suggestions = [
         { id: "open_random", name: "Open random unreviewed file" },
       ];
     } else {
-      const isReviewed =
-        this.plugin.getSnapshotFile(activeFile.path)?.status === "reviewed";
+      const isReviewed = this.plugin.reviewedPaths.has(file.path);
 
       if (isReviewed) {
         suggestions = [
