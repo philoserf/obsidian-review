@@ -40,7 +40,6 @@ mock.module("obsidian", () => {
   }
   class TFolder {}
   class AbstractInputSuggest {
-    constructor(_app: unknown, _inputEl: unknown) {}
     setValue(_v: string) {
       return this;
     }
