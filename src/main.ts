@@ -12,6 +12,7 @@ import {
   type TFile,
   TFolder,
 } from "obsidian";
+import { FolderSuggest } from "./folderSuggest";
 
 type PluginData = {
   schemaVersion: number;
@@ -359,91 +360,79 @@ class ReviewSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    const snapshot = this.plugin.data.snapshot;
-
-    // Main action
-    const settingEl = new Setting(containerEl)
-      .setName("Snapshot")
+    // Review section
+    const reviewSetting = new Setting(containerEl)
+      .setName("Review")
       .setDesc(
-        snapshot?.createdAt
-          ? `Snapshot created on ${snapshot.createdAt.toLocaleDateString()}.`
-          : "Create a snapshot of the vault.",
+        this.plugin.data.reviewStartedAt
+          ? `Review started on ${new Date(this.plugin.data.reviewStartedAt).toLocaleDateString()}.`
+          : "No active review.",
       );
-    if (snapshot) {
-      settingEl.addButton((btn) => {
-        btn.setIcon("trash");
-        btn.setWarning();
-        btn.onClick(async () => {
-          await this.plugin.deleteSnapshot();
-          this.display();
-        });
+    reviewSetting.addButton((btn) => {
+      btn.setButtonText("Reset review");
+      btn.setWarning();
+      btn.onClick(async () => {
+        await this.plugin.resetReview();
+        this.display();
       });
-      settingEl.addButton((btn) => {
-        btn.setButtonText("Add all new files to snapshot").onClick(async () => {
-          const vaultFiles = this.plugin.app.vault
-            .getMarkdownFiles()
-            .filter(
-              (file) =>
-                !this.plugin.data.snapshot?.files.some(
-                  (f) => f.path === file.path,
-                ),
-            )
-            .map(
-              (file): SnapshotFile => ({
-                path: file.path,
-                status: "to_review",
-              }),
-            );
-          this.plugin.data.snapshot?.files.push(...vaultFiles);
-          this.plugin.statusBar.update();
-          this.display();
-          await this.plugin.saveSettings();
+    });
+
+    // Stats
+    const eligible = this.plugin.getEligibleFiles();
+    const reviewedCount = eligible.filter((f) =>
+      this.plugin.reviewedPaths.has(f.path),
+    ).length;
+    const stats = computeStats(reviewedCount, eligible.length);
+
+    containerEl.createDiv("review-stats", (div) => {
+      div.createEl("p").setText(`Eligible files: ${stats.eligible}`);
+      div
+        .createEl("p")
+        .setText(`Reviewed: ${stats.reviewed} (${stats.percentCompleted}%)`);
+      div.createEl("p").setText(`Not reviewed: ${stats.notReviewed}`);
+    });
+
+    // Excluded folders
+    new Setting(containerEl)
+      .setName("Excluded folders")
+      .setDesc("Files in these folders will not appear in review.");
+
+    for (let i = 0; i < this.plugin.data.excludedFolders.length; i++) {
+      new Setting(containerEl)
+        .addText((text) => {
+          text.setValue(this.plugin.data.excludedFolders[i]);
+          text.onChange(async (value) => {
+            this.plugin.data.excludedFolders[i] = value.replace(/\/+$/, "");
+            this.plugin.statusBar.update();
+            await this.plugin.saveSettings();
+          });
+          new FolderSuggest(this.app, text.inputEl, async (value) => {
+            this.plugin.data.excludedFolders[i] = value.replace(/\/+$/, "");
+            this.plugin.statusBar.update();
+            await this.plugin.saveSettings();
+          });
+        })
+        .addButton((btn) => {
+          btn.setIcon("trash");
+          btn.onClick(async () => {
+            this.plugin.data.excludedFolders.splice(i, 1);
+            this.plugin.statusBar.update();
+            await this.plugin.saveSettings();
+            this.display();
+          });
         });
-      });
-    } else {
-      settingEl.addButton((btn) => {
-        btn.setButtonText("Create snapshot");
-        btn.setCta();
-        btn.onClick(async () => {
-          const files = this.plugin.app.vault.getMarkdownFiles().map(
-            (file): SnapshotFile => ({
-              path: file.path,
-              status: "to_review",
-            }),
-          );
-          this.plugin.data.snapshot = {
-            files,
-            createdAt: new Date(),
-          };
-          this.plugin.statusBar.update();
-          this.display();
-          await this.plugin.saveSettings();
-        });
-      });
     }
 
-    // Snapshot info
-    if (snapshot) {
-      containerEl.createDiv("snapshot-info", (div) => {
-        const allFilesLength = this.plugin.app.vault.getMarkdownFiles().length;
-        const stats = computeStats(snapshot.files, allFilesLength);
-
-        div.createEl("p").setText(`Markdown files in vault: ${allFilesLength}`);
-
-        const inSnapshotEl = div.createEl("p", "in-snapshot");
-        inSnapshotEl.createSpan().setText(`In snapshot: ${stats.total}`);
-        inSnapshotEl.createSpan().setText(`To review: ${stats.toReview}`);
-        inSnapshotEl
-          .createSpan()
-          .setText(`Reviewed: ${stats.reviewed} (${stats.percentCompleted}%)`);
-        inSnapshotEl
-          .createSpan()
-          .setText(`Deleted: ${stats.deleted} (${stats.percentDeleted}%)`);
-
-        div.createEl("p").setText(`Not in snapshot: ${stats.notInSnapshot}`);
+    new Setting(containerEl).addButton((btn) => {
+      btn.setButtonText("Add excluded folder");
+      btn.onClick(async () => {
+        this.plugin.data.excludedFolders.push("");
+        await this.plugin.saveSettings();
+        this.display();
       });
-    }
+    });
 
+    // Status bar toggle
     new Setting(containerEl)
       .setName("Status bar")
       .setDesc("Show file review status in the status bar.")
