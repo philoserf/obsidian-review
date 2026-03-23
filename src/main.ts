@@ -1,5 +1,6 @@
 import {
   type App,
+  debounce,
   Menu,
   Modal,
   Notice,
@@ -90,7 +91,7 @@ export function removeByPrefix(
 
 export default class ReviewPlugin extends Plugin {
   data!: PluginData;
-  reviewedPaths!: Set<string>;
+  private reviewedPaths!: Set<string>;
   statusBar!: StatusBar;
 
   onload = async () => {
@@ -194,13 +195,15 @@ export default class ReviewPlugin extends Plugin {
   getActiveFileStatus = (): "reviewed" | "not_reviewed" | undefined => {
     const file = this.getActiveMarkdownFile();
     if (!file || !this.isFileEligible(file.path)) return undefined;
-    return this.reviewedPaths.has(file.path) ? "reviewed" : "not_reviewed";
+    return this.isReviewed(file.path) ? "reviewed" : "not_reviewed";
   };
 
-  getUnreviewedFiles = (): TFile[] => {
-    return this.getEligibleFiles().filter(
-      (f) => !this.reviewedPaths.has(f.path),
-    );
+  isReviewed = (path: string): boolean => {
+    return this.reviewedPaths.has(path);
+  };
+
+  getReviewedCount = (files: TFile[]): number => {
+    return files.filter((f) => this.isReviewed(f.path)).length;
   };
 
   openReviewMenu = () => {
@@ -208,7 +211,9 @@ export default class ReviewPlugin extends Plugin {
   };
 
   openRandomFile = () => {
-    const files = this.getUnreviewedFiles();
+    const files = this.getEligibleFiles().filter(
+      (f) => !this.isReviewed(f.path),
+    );
     if (!files.length) {
       new Notice("All files are reviewed");
       return;
@@ -271,7 +276,7 @@ export default class ReviewPlugin extends Plugin {
       return;
     }
 
-    if (this.reviewedPaths.has(oldPath)) {
+    if (this.isReviewed(oldPath)) {
       this.reviewedPaths.delete(oldPath);
       this.reviewedPaths.add(file.path);
       await this.saveSettings();
@@ -287,7 +292,7 @@ export default class ReviewPlugin extends Plugin {
       return;
     }
 
-    if (this.reviewedPaths.has(file.path)) {
+    if (this.isReviewed(file.path)) {
       this.reviewedPaths.delete(file.path);
       this.statusBar.update();
       await this.saveSettings();
@@ -296,8 +301,8 @@ export default class ReviewPlugin extends Plugin {
 }
 
 class StatusBar {
-  element: HTMLElement;
-  plugin: ReviewPlugin;
+  private element: HTMLElement;
+  private plugin: ReviewPlugin;
   private statusSpan: Element;
 
   constructor(element: HTMLElement, plugin: ReviewPlugin) {
@@ -356,6 +361,7 @@ class StatusBar {
 
 class ReviewSettingTab extends PluginSettingTab {
   plugin: ReviewPlugin;
+  private debouncedSave = debounce(() => this.plugin.saveSettings(), 500, true);
 
   constructor(app: App, plugin: ReviewPlugin) {
     super(app, plugin);
@@ -383,9 +389,7 @@ class ReviewSettingTab extends PluginSettingTab {
     });
 
     const eligible = this.plugin.getEligibleFiles();
-    const reviewedCount = eligible.filter((f) =>
-      this.plugin.reviewedPaths.has(f.path),
-    ).length;
+    const reviewedCount = this.plugin.getReviewedCount(eligible);
     const stats = computeStats(reviewedCount, eligible.length);
 
     containerEl.createDiv("review-stats", (div) => {
@@ -401,16 +405,21 @@ class ReviewSettingTab extends PluginSettingTab {
       .setDesc("Files in these folders will not appear in review.");
 
     for (let i = 0; i < this.plugin.data.excludedFolders.length; i++) {
-      const updateFolder = async (value: string) => {
+      const applyFolder = (value: string) => {
         this.plugin.data.excludedFolders[i] = value.replace(/\/+$/, "");
         this.plugin.statusBar.update();
-        await this.plugin.saveSettings();
       };
       new Setting(containerEl)
         .addText((text) => {
           text.setValue(this.plugin.data.excludedFolders[i]);
-          text.onChange(updateFolder);
-          new FolderSuggest(this.app, text.inputEl, updateFolder);
+          text.onChange((value) => {
+            applyFolder(value);
+            this.debouncedSave();
+          });
+          new FolderSuggest(this.app, text.inputEl, async (value) => {
+            applyFolder(value);
+            await this.plugin.saveSettings();
+          });
         })
         .addButton((btn) => {
           btn.setIcon("trash");
@@ -510,7 +519,7 @@ class ReviewMenuModal extends SuggestModal<ReviewCommand> {
         { id: "open_random", name: "Open random unreviewed file" },
       ];
     } else {
-      const isReviewed = this.plugin.reviewedPaths.has(file.path);
+      const isReviewed = this.plugin.isReviewed(file.path);
 
       if (isReviewed) {
         suggestions = [

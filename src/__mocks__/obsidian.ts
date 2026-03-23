@@ -46,6 +46,12 @@ mock.module("obsidian", () => {
     close() {}
   }
 
+  const debounce = <T extends (...args: unknown[]) => unknown>(
+    fn: T,
+    _ms: number,
+    _resetTimer?: boolean,
+  ): T => fn;
+
   return {
     Plugin,
     PluginSettingTab,
@@ -56,5 +62,6 @@ mock.module("obsidian", () => {
     SuggestModal,
     TFolder,
     AbstractInputSuggest,
+    debounce,
   };
 });
