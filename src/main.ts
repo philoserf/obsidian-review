@@ -3,7 +3,6 @@ import {
   Menu,
   Modal,
   Notice,
-  type PaneType,
   Plugin,
   PluginSettingTab,
   Setting,
