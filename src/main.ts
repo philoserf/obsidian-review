@@ -65,6 +65,23 @@ export function computeStats(
   };
 }
 
+export function rewritePaths(
+  files: SnapshotFile[],
+  oldPath: string,
+  newPath: string,
+): boolean {
+  const oldPrefix = `${oldPath}/`;
+  const newPrefix = `${newPath}/`;
+  let changed = false;
+  for (const f of files) {
+    if (f.path.startsWith(oldPrefix)) {
+      f.path = newPrefix + f.path.slice(oldPrefix.length);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 export default class ReviewPlugin extends Plugin {
   data!: PluginData;
 
@@ -312,16 +329,9 @@ export default class ReviewPlugin extends Plugin {
     if (!this.data.snapshot) return;
 
     if (file instanceof TFolder) {
-      const oldPrefix = `${oldPath}/`;
-      const newPrefix = `${file.path}/`;
-      let changed = false;
-      for (const f of this.data.snapshot.files) {
-        if (f.path.startsWith(oldPrefix)) {
-          f.path = newPrefix + f.path.slice(oldPrefix.length);
-          changed = true;
-        }
+      if (rewritePaths(this.data.snapshot.files, oldPath, file.path)) {
+        await this.saveSettings();
       }
-      if (changed) await this.saveSettings();
       return;
     }
 
