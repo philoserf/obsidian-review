@@ -8,7 +8,7 @@ Obsidian plugin to randomly review vault notes and track progress.
 
 ```bash
 bun install              # Install dependencies
-bun run dev              # Watch mode with auto-rebuild
+bun run dev              # Development build (no minification, includes sourcemaps)
 bun run build            # Production build (runs check first)
 bun run check            # Run all checks (typecheck + biome)
 bun run typecheck        # TypeScript type checking only
@@ -16,6 +16,8 @@ bun run lint             # Biome lint + format check
 bun run lint:fix         # Auto-fix lint and format issues
 bun run format           # Format code with Biome
 bun run validate         # Full validation (types, checks, build, output)
+bun run audit            # Check dependencies for critical vulnerabilities
+bun run deploy           # Copy build output to local Obsidian vault for testing
 bun run version          # Sync package.json version to manifest.json + versions.json
 bun test                 # Run tests
 ```
@@ -34,9 +36,19 @@ bun test                 # Run tests
 Tag and push to trigger the GitHub Actions release workflow:
 
 ```bash
-git tag -a 1.0.0 -m "Release 1.0.0"
-git push origin 1.0.0
+git tag -a <version> -m "Release <version>"
+git push origin <version>
 ```
+
+## Gotchas
+
+- `tsc --noEmit` reports errors for `obsidian`, `bun:test`, and `node:fs` modules — these resolve only inside the Obsidian/Bun runtime. CI passes because it installs all type packages. Local failures are expected.
+- `bun run dev` does NOT watch for changes (open issue). It builds once with dev settings and exits.
+- If issue descriptions (line numbers, function names, code structure) don't match the current codebase, stop and flag the discrepancy before proceeding with a fix.
+
+## Testing
+
+Pure logic is exported from `src/main.ts` (`computeStats`, `rewritePaths`, `markFolderDeleted`) and tested directly in `src/main.test.ts`. Plugin integration (Obsidian API calls) is not unit-tested.
 
 ## Code Style
 
