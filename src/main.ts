@@ -90,7 +90,7 @@ export function removeByPrefix(
 
 export default class ReviewPlugin extends Plugin {
   data!: PluginData;
-
+  reviewedPaths!: Set<string>;
   statusBar!: StatusBar;
 
   onload = async () => {
@@ -105,42 +105,39 @@ export default class ReviewPlugin extends Plugin {
     this.addCommand({
       id: "open-random-unreviewed",
       name: "Open random unreviewed file",
-      callback: () => {
-        this.openRandomFile();
-      },
+      callback: () => this.openRandomFile(),
     });
     this.addCommand({
       id: "mark-reviewed",
       name: "Mark file as reviewed",
       checkCallback: (checking) => {
-        if (checking) {
-          return this.getActiveFileStatus() === "to_review";
-        }
-
-        this.markReviewed();
+        if (this.getActiveFileStatus() !== "not_reviewed") return false;
+        if (!checking) this.markReviewed();
+        return true;
       },
     });
     this.addCommand({
       id: "mark-reviewed-and-open-next",
       name: "Mark file as reviewed and open next",
       checkCallback: (checking) => {
-        if (checking) {
-          return this.getActiveFileStatus() === "to_review";
-        }
-
-        this.markReviewed({ openNext: true });
+        if (this.getActiveFileStatus() !== "not_reviewed") return false;
+        if (!checking) this.markReviewed({ openNext: true });
+        return true;
       },
     });
     this.addCommand({
       id: "mark-unreviewed",
       name: "Mark file as unreviewed",
       checkCallback: (checking) => {
-        if (checking) {
-          return this.getActiveFileStatus() === "reviewed";
-        }
-
-        this.markUnreviewed();
+        if (this.getActiveFileStatus() !== "reviewed") return false;
+        if (!checking) this.markUnreviewed();
+        return true;
       },
+    });
+    this.addCommand({
+      id: "open-review-menu",
+      name: "Open review menu",
+      callback: () => this.openReviewMenu(),
     });
 
     this.addSettingTab(new ReviewSettingTab(this.app, this));
@@ -154,26 +151,15 @@ export default class ReviewPlugin extends Plugin {
 
   loadSettings = async () => {
     const saved = await this.loadData();
-    this.data = {
-      ...DEFAULT_SETTINGS,
-      ...saved,
-    };
-
-    // Migrate from pre-1.2 nested settings shape
-    if (
-      saved?.settings?.showStatusBar !== undefined &&
-      saved.showStatusBar === undefined
-    ) {
-      this.data.showStatusBar = saved.settings.showStatusBar;
-    }
-    delete (this.data as Record<string, unknown>).settings;
-
-    if (typeof this.data.snapshot?.createdAt === "string") {
-      this.data.snapshot.createdAt = new Date(this.data.snapshot.createdAt);
-    }
+    this.data = { ...DEFAULT_DATA, ...saved };
+    // Discard old snapshot field from v1
+    delete (this.data as Record<string, unknown>).snapshot;
+    this.data.schemaVersion = CURRENT_SCHEMA_VERSION;
+    this.reviewedPaths = new Set(this.data.reviewedPaths);
   };
 
   saveSettings = async () => {
+    this.data.reviewedPaths = [...this.reviewedPaths];
     await this.saveData(this.data);
   };
 
@@ -184,186 +170,118 @@ export default class ReviewPlugin extends Plugin {
 
   getActiveMarkdownFile = (): TFile | null => {
     const activeFile = this.app.workspace.getActiveFile();
-    if (activeFile?.extension !== "md") {
-      return null;
-    }
+    if (activeFile?.extension !== "md") return null;
     return activeFile;
   };
 
-  getSnapshotFile = (path: string) => {
-    return this.data.snapshot?.files.find((f) => f.path === path);
+  isFileEligible = (path: string): boolean => {
+    return !isExcluded(path, this.data.excludedFolders);
   };
 
-  getActiveFileStatus = (): DisplayStatus | undefined => {
-    const activeFile = this.getActiveMarkdownFile();
-    if (!activeFile) {
-      return;
-    }
-
-    return this.getSnapshotFile(activeFile.path)?.status ?? "new";
+  getEligibleFiles = (): TFile[] => {
+    return this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => this.isFileEligible(f.path));
   };
 
-  getToReviewFiles = () => {
-    return (
-      this.data.snapshot?.files.filter((file) => file.status === "to_review") ??
-      []
+  getActiveFileStatus = (): "reviewed" | "not_reviewed" | undefined => {
+    const file = this.getActiveMarkdownFile();
+    if (!file || !this.isFileEligible(file.path)) return undefined;
+    return this.reviewedPaths.has(file.path) ? "reviewed" : "not_reviewed";
+  };
+
+  getUnreviewedFiles = (): TFile[] => {
+    return this.getEligibleFiles().filter(
+      (f) => !this.reviewedPaths.has(f.path),
     );
   };
 
   openReviewMenu = () => {
-    if (!this.data.snapshot) {
-      new Notice("Vault review snapshot is not created");
-      return;
-    }
-
     new ReviewMenuModal(this.app, this).open();
   };
 
   openRandomFile = () => {
-    if (!this.data.snapshot) {
-      new Notice("Vault review snapshot is not created");
-      return;
-    }
-
-    const files = this.getToReviewFiles();
+    const files = this.getUnreviewedFiles();
     if (!files.length) {
       new Notice("All files are reviewed");
       return;
     }
-
     const randomFile = files[Math.floor(Math.random() * files.length)];
-    this.focusFile(randomFile, false);
+    const leaf = this.app.workspace.getLeaf(false);
+    leaf.openFile(randomFile);
   };
 
-  private focusFile = async (
-    file: SnapshotFile,
-    newLeaf: boolean | PaneType,
-  ) => {
-    const targetFile = this.app.vault.getFileByPath(file.path);
+  markReviewed = async ({ openNext = false }: { openNext?: boolean } = {}) => {
+    const file = this.getActiveMarkdownFile();
+    if (!file) return;
 
-    if (targetFile) {
-      const leaf = this.app.workspace.getLeaf(newLeaf);
-      leaf.openFile(targetFile);
-    } else {
-      new Notice(`Cannot find file: ${file.path}`);
-      const snapshotFile = this.getSnapshotFile(file.path);
-      if (snapshotFile) {
-        snapshotFile.status = "deleted";
-        this.statusBar.update();
-        await this.saveSettings();
-      }
-    }
-  };
-
-  markReviewed = async ({
-    file,
-    openNext = false,
-  }: {
-    file?: SnapshotFile;
-    openNext?: boolean;
-  } = {}) => {
-    const activeFile = file ?? this.getActiveMarkdownFile();
-    if (!activeFile) {
-      return;
-    }
-
-    const snapshotFile = this.getSnapshotFile(activeFile.path);
-
-    if (!snapshotFile) {
-      new Notice("File was added to snapshot and marked as reviewed");
-      this.data.snapshot?.files.push({
-        path: activeFile.path,
-        status: "reviewed",
-      });
-    } else {
-      snapshotFile.status = "reviewed";
-    }
-
-    if (openNext) {
-      this.openRandomFile();
+    this.reviewedPaths.add(file.path);
+    if (!this.data.reviewStartedAt) {
+      this.data.reviewStartedAt = new Date().toISOString();
     }
 
     this.statusBar.update();
     await this.saveSettings();
+
+    if (openNext) this.openRandomFile();
   };
 
-  markUnreviewed = async (file?: SnapshotFile) => {
-    const activeFile = file ?? this.getActiveMarkdownFile();
-    if (!activeFile) {
-      return;
-    }
+  markUnreviewed = async () => {
+    const file = this.getActiveMarkdownFile();
+    if (!file) return;
 
-    const snapshotFile = this.getSnapshotFile(activeFile.path);
-
-    if (!snapshotFile) {
-      new Notice("File was added to snapshot and marked as not reviewed");
-      this.data.snapshot?.files.push({
-        path: activeFile.path,
-        status: "to_review",
-      });
-    } else {
-      snapshotFile.status = "to_review";
-    }
-
+    this.reviewedPaths.delete(file.path);
     this.statusBar.update();
     await this.saveSettings();
   };
 
-  deleteSnapshot = async ({
+  resetReview = async ({
     confirm = true,
   }: {
     confirm?: boolean;
   } = {}): Promise<boolean> => {
-    if (confirm && !(await this.confirmDelete())) {
-      return false;
-    }
+    if (confirm && !(await this.confirmReset())) return false;
 
-    this.data.snapshot = undefined;
+    this.reviewedPaths.clear();
+    this.data.reviewStartedAt = undefined;
     this.statusBar.update();
     await this.saveSettings();
     return true;
   };
 
-  private confirmDelete = (): Promise<boolean> => {
+  private confirmReset = (): Promise<boolean> => {
     return new Promise((resolve) => {
-      const modal = new ConfirmSnapshotDeleteModal(this.app, resolve);
+      const modal = new ConfirmResetModal(this.app, resolve);
       modal.open();
     });
   };
 
   private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
-    if (!this.data.snapshot) return;
-
     if (file instanceof TFolder) {
-      if (rewritePaths(this.data.snapshot.files, oldPath, file.path)) {
+      if (rewriteReviewedPaths(this.reviewedPaths, oldPath, file.path)) {
         await this.saveSettings();
       }
       return;
     }
 
-    const snapshotFile = this.getSnapshotFile(oldPath);
-    if (snapshotFile) {
-      snapshotFile.path = file.path;
+    if (this.reviewedPaths.has(oldPath)) {
+      this.reviewedPaths.delete(oldPath);
+      this.reviewedPaths.add(file.path);
       await this.saveSettings();
     }
   };
 
   private handleFileDelete = async (file: TAbstractFile) => {
-    if (!this.data.snapshot) {
-      return;
-    }
-
     if (file instanceof TFolder) {
-      if (markFolderDeleted(this.data.snapshot.files, file.path)) {
+      if (removeByPrefix(this.reviewedPaths, file.path)) {
         this.statusBar.update();
         await this.saveSettings();
       }
       return;
     }
 
-    const snapshotFile = this.getSnapshotFile(file.path);
-    if (snapshotFile) {
-      snapshotFile.status = "deleted";
+    if (this.reviewedPaths.has(file.path)) {
+      this.reviewedPaths.delete(file.path);
       this.statusBar.update();
       await this.saveSettings();
     }
