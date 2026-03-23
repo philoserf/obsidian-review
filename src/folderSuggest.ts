@@ -16,7 +16,7 @@ export class FolderSuggest extends AbstractInputSuggest<TFolder> {
     const lowerQuery = query.toLowerCase();
     return this.app.vault
       .getAllFolders()
-      .filter((folder) => folder.path.toLowerCase().contains(lowerQuery));
+      .filter((folder) => folder.path.toLowerCase().includes(lowerQuery));
   }
 
   renderSuggestion(folder: TFolder, el: HTMLElement): void {

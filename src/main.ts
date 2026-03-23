@@ -152,7 +152,14 @@ export default class ReviewPlugin extends Plugin {
   loadSettings = async () => {
     const saved = await this.loadData();
     this.data = { ...DEFAULT_DATA, ...saved };
-    // Discard old snapshot field from v1
+    // Migrate showStatusBar from pre-1.2 nested settings shape
+    if (
+      saved?.settings?.showStatusBar !== undefined &&
+      saved.showStatusBar === undefined
+    ) {
+      this.data.showStatusBar = saved.settings.showStatusBar;
+    }
+    delete (this.data as Record<string, unknown>).settings;
     delete (this.data as Record<string, unknown>).snapshot;
     this.data.schemaVersion = CURRENT_SCHEMA_VERSION;
     this.reviewedPaths = new Set(this.data.reviewedPaths);
