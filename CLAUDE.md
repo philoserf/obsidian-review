@@ -48,7 +48,7 @@ git push origin <version>
 
 ## Testing
 
-Pure logic is exported from `src/main.ts` (`computeStats`, `rewritePaths`, `markFolderDeleted`) and tested directly in `src/main.test.ts`. Plugin integration (Obsidian API calls) is not unit-tested.
+Pure logic is exported from `src/main.ts` (`computeStats`, `isExcluded`, `rewriteReviewedPaths`, `removeByPrefix`) and tested directly in `src/main.test.ts`. Plugin integration (Obsidian API calls) is not unit-tested.
 
 ## Code Style
 
