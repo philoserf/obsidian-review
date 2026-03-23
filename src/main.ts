@@ -51,7 +51,7 @@ export function computeStats(
   const active = total - deleted;
   const percentCompleted = active ? Math.round((reviewed / active) * 100) : 0;
   const percentDeleted = total ? Math.round((deleted / total) * 100) : 0;
-  const notInSnapshot = allVaultFilesCount - total + deleted;
+  const notInSnapshot = Math.max(0, allVaultFilesCount - active);
 
   return {
     total,
