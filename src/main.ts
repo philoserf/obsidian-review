@@ -132,6 +132,15 @@ export default class ReviewPlugin extends Plugin {
       ...saved,
     };
 
+    // Migrate from pre-1.2 nested settings shape
+    if (
+      saved?.settings?.showStatusBar !== undefined &&
+      saved.showStatusBar === undefined
+    ) {
+      this.data.showStatusBar = saved.settings.showStatusBar;
+    }
+    delete (this.data as Record<string, unknown>).settings;
+
     if (typeof this.data.snapshot?.createdAt === "string") {
       this.data.snapshot.createdAt = new Date(this.data.snapshot.createdAt);
     }
@@ -512,6 +521,7 @@ class ConfirmSnapshotDeleteModal extends Modal {
       .addButton((btn) => {
         btn.setButtonText("Cancel");
         btn.onClick(() => {
+          settled = true;
           resolve(false);
           this.close();
         });
@@ -528,14 +538,17 @@ class ConfirmSnapshotDeleteModal extends Modal {
 
     let settled = false;
     this.onClose = () => {
-      if (!settled) resolve(false);
+      if (!settled) {
+        settled = true;
+        resolve(false);
+      }
     };
   }
 }
 
 type ReviewCommand = { id: string; name: string };
 
-const STATUS_DESCRIPTIONS: Record<string, string> = {
+const STATUS_DESCRIPTIONS: Partial<Record<DisplayStatus, string>> = {
   new: "This file is not in snapshot",
   to_review: "This file is not reviewed",
   reviewed: "This file is reviewed",
