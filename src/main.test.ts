@@ -55,6 +55,18 @@ describe("computeStats", () => {
     expect(stats.percentCompleted).toBe(0);
     expect(stats.percentDeleted).toBe(100);
   });
+
+  test("notInSnapshot clamps to zero when vault shrinks", () => {
+    const files = [
+      file("a.md", "reviewed"),
+      file("b.md", "to_review"),
+      file("c.md", "to_review"),
+      file("d.md", "deleted"),
+      file("e.md", "reviewed"),
+    ];
+    const stats = computeStats(files, 2);
+    expect(stats.notInSnapshot).toBe(0);
+  });
 });
 
 describe("rewritePaths", () => {
