@@ -6,6 +6,7 @@ const result = await Bun.build({
   format: "cjs",
   external: ["obsidian", "electron"],
   minify: !watch,
+  sourcemap: watch ? "linked" : "none",
 });
 
 if (!result.success) {
