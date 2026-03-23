@@ -1,144 +1,107 @@
 import { describe, expect, test } from "bun:test";
 import {
   computeStats,
-  markFolderDeleted,
-  rewritePaths,
-  type SnapshotFile,
+  isExcluded,
+  removeByPrefix,
+  rewriteReviewedPaths,
 } from "./main";
 
-function file(path: string, status: SnapshotFile["status"]): SnapshotFile {
-  return { path, status };
-}
-
-describe("computeStats", () => {
-  test("mixed snapshot", () => {
-    const files = [
-      file("a.md", "reviewed"),
-      file("b.md", "to_review"),
-      file("c.md", "to_review"),
-      file("d.md", "deleted"),
-      file("e.md", "reviewed"),
-    ];
-
-    const stats = computeStats(files, 10);
-    expect(stats.total).toBe(5);
-    expect(stats.deleted).toBe(1);
-    expect(stats.reviewed).toBe(2);
-    expect(stats.toReview).toBe(2);
-    expect(stats.active).toBe(4);
-    expect(stats.percentCompleted).toBe(50);
-    expect(stats.percentDeleted).toBe(20);
-    expect(stats.notInSnapshot).toBe(6);
+describe("isExcluded", () => {
+  test("excludes file in excluded folder", () => {
+    expect(isExcluded("templates/note.md", ["templates"])).toBe(true);
   });
 
-  test("empty snapshot", () => {
-    const stats = computeStats([], 10);
-    expect(stats.percentCompleted).toBe(0);
-    expect(stats.percentDeleted).toBe(0);
-    expect(stats.notInSnapshot).toBe(10);
+  test("excludes file in nested subfolder", () => {
+    expect(isExcluded("templates/sub/note.md", ["templates"])).toBe(true);
   });
 
-  test("fully reviewed", () => {
-    const stats = computeStats(
-      [file("a.md", "reviewed"), file("b.md", "reviewed")],
-      2,
+  test("does not exclude file outside excluded folders", () => {
+    expect(isExcluded("projects/note.md", ["templates"])).toBe(false);
+  });
+
+  test("does not exclude file with matching prefix but no slash", () => {
+    expect(isExcluded("templates-extra/note.md", ["templates"])).toBe(false);
+  });
+
+  test("handles multiple excluded folders", () => {
+    expect(isExcluded("daily/2026-03-23.md", ["templates", "daily"])).toBe(
+      true,
     );
-    expect(stats.percentCompleted).toBe(100);
-    expect(stats.toReview).toBe(0);
   });
 
-  test("all deleted", () => {
-    const stats = computeStats(
-      [file("a.md", "deleted"), file("b.md", "deleted")],
-      5,
-    );
-    expect(stats.percentCompleted).toBe(0);
-    expect(stats.percentDeleted).toBe(100);
+  test("returns false for empty excluded list", () => {
+    expect(isExcluded("anything.md", [])).toBe(false);
   });
 
-  test("notInSnapshot clamps to zero when vault shrinks", () => {
-    const files = [
-      file("a.md", "reviewed"),
-      file("b.md", "to_review"),
-      file("c.md", "to_review"),
-      file("d.md", "deleted"),
-      file("e.md", "reviewed"),
-    ];
-    const stats = computeStats(files, 2);
-    expect(stats.notInSnapshot).toBe(0);
+  test("does not exclude root-level file", () => {
+    expect(isExcluded("note.md", ["templates"])).toBe(false);
   });
 });
 
-describe("rewritePaths", () => {
-  test("rewrites child paths under renamed folder", () => {
-    const files = [
-      file("folder/a.md", "to_review"),
-      file("folder/sub/b.md", "reviewed"),
-      file("other/c.md", "to_review"),
-    ];
-    const changed = rewritePaths(files, "folder", "renamed");
+describe("computeStats", () => {
+  test("computes stats for partial review", () => {
+    const stats = computeStats(5, 20);
+    expect(stats.reviewed).toBe(5);
+    expect(stats.eligible).toBe(20);
+    expect(stats.notReviewed).toBe(15);
+    expect(stats.percentCompleted).toBe(25);
+  });
+
+  test("handles zero eligible files", () => {
+    const stats = computeStats(0, 0);
+    expect(stats.percentCompleted).toBe(0);
+    expect(stats.notReviewed).toBe(0);
+  });
+
+  test("handles fully reviewed", () => {
+    const stats = computeStats(10, 10);
+    expect(stats.percentCompleted).toBe(100);
+    expect(stats.notReviewed).toBe(0);
+  });
+});
+
+describe("rewriteReviewedPaths", () => {
+  test("rewrites paths under renamed folder", () => {
+    const paths = new Set(["folder/a.md", "folder/sub/b.md", "other/c.md"]);
+    const changed = rewriteReviewedPaths(paths, "folder", "renamed");
     expect(changed).toBe(true);
-    expect(files[0].path).toBe("renamed/a.md");
-    expect(files[1].path).toBe("renamed/sub/b.md");
-    expect(files[2].path).toBe("other/c.md");
+    expect(paths.has("renamed/a.md")).toBe(true);
+    expect(paths.has("renamed/sub/b.md")).toBe(true);
+    expect(paths.has("other/c.md")).toBe(true);
+    expect(paths.has("folder/a.md")).toBe(false);
+    expect(paths.size).toBe(3);
   });
 
   test("returns false when no paths match", () => {
-    const files = [file("other/a.md", "to_review")];
-    const changed = rewritePaths(files, "folder", "renamed");
-    expect(changed).toBe(false);
-    expect(files[0].path).toBe("other/a.md");
+    const paths = new Set(["other/a.md"]);
+    expect(rewriteReviewedPaths(paths, "folder", "renamed")).toBe(false);
+    expect(paths.has("other/a.md")).toBe(true);
   });
 
   test("does not rewrite path that only shares a prefix", () => {
-    const files = [file("folder-extra/a.md", "to_review")];
-    const changed = rewritePaths(files, "folder", "renamed");
-    expect(changed).toBe(false);
-    expect(files[0].path).toBe("folder-extra/a.md");
+    const paths = new Set(["folder-extra/a.md"]);
+    expect(rewriteReviewedPaths(paths, "folder", "renamed")).toBe(false);
+    expect(paths.has("folder-extra/a.md")).toBe(true);
   });
 });
 
-describe("markFolderDeleted", () => {
-  test("marks all contained files as deleted", () => {
-    const files = [
-      file("folder/a.md", "to_review"),
-      file("folder/sub/b.md", "reviewed"),
-      file("other/c.md", "to_review"),
-    ];
-    const changed = markFolderDeleted(files, "folder");
+describe("removeByPrefix", () => {
+  test("removes all paths under folder", () => {
+    const paths = new Set(["folder/a.md", "folder/sub/b.md", "other/c.md"]);
+    const changed = removeByPrefix(paths, "folder");
     expect(changed).toBe(true);
-    expect(files[0].status).toBe("deleted");
-    expect(files[1].status).toBe("deleted");
-    expect(files[2].status).toBe("to_review");
+    expect(paths.size).toBe(1);
+    expect(paths.has("other/c.md")).toBe(true);
   });
 
-  test("returns false when no files match", () => {
-    const files = [file("other/a.md", "to_review")];
-    expect(markFolderDeleted(files, "folder")).toBe(false);
+  test("returns false when no paths match", () => {
+    const paths = new Set(["other/a.md"]);
+    expect(removeByPrefix(paths, "folder")).toBe(false);
   });
 
-  test("does not match path that only shares a prefix", () => {
-    const files = [file("folder-extra/a.md", "to_review")];
-    expect(markFolderDeleted(files, "folder")).toBe(false);
-    expect(files[0].status).toBe("to_review");
-  });
-
-  test("skips files already marked as deleted", () => {
-    const files = [
-      file("folder/a.md", "deleted"),
-      file("folder/b.md", "to_review"),
-    ];
-    const changed = markFolderDeleted(files, "folder");
-    expect(changed).toBe(true);
-    expect(files[0].status).toBe("deleted");
-    expect(files[1].status).toBe("deleted");
-  });
-
-  test("returns false when all contained files already deleted", () => {
-    const files = [
-      file("folder/a.md", "deleted"),
-      file("folder/b.md", "deleted"),
-    ];
-    expect(markFolderDeleted(files, "folder")).toBe(false);
+  test("does not remove path that only shares a prefix", () => {
+    const paths = new Set(["folder-extra/a.md"]);
+    expect(removeByPrefix(paths, "folder")).toBe(false);
+    expect(paths.has("folder-extra/a.md")).toBe(true);
   });
 });

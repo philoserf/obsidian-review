@@ -15,82 +15,73 @@ import {
 
 type PluginData = {
   schemaVersion: number;
-  snapshot?: Snapshot;
+  reviewedPaths: string[];
+  reviewStartedAt?: string;
+  excludedFolders: string[];
   showStatusBar: boolean;
 };
 
-export type SnapshotFile = {
-  path: string;
-  status: ReviewStatus;
-};
+const CURRENT_SCHEMA_VERSION = 2;
 
-type Snapshot = {
-  files: SnapshotFile[];
-  createdAt: Date;
-};
-
-export type ReviewStatus = "to_review" | "reviewed" | "deleted";
-
-type DisplayStatus = ReviewStatus | "new";
-
-const CURRENT_SCHEMA_VERSION = 1;
-
-const DEFAULT_SETTINGS: PluginData = {
+const DEFAULT_DATA: PluginData = {
   schemaVersion: CURRENT_SCHEMA_VERSION,
+  reviewedPaths: [],
+  excludedFolders: [],
   showStatusBar: true,
 };
 
-export function computeStats(
-  snapshotFiles: SnapshotFile[],
-  allVaultFilesCount: number,
-) {
-  const total = snapshotFiles.length;
-  const deleted = snapshotFiles.filter((f) => f.status === "deleted").length;
-  const reviewed = snapshotFiles.filter((f) => f.status === "reviewed").length;
-  const toReview = total - reviewed - deleted;
-  const active = total - deleted;
-  const percentCompleted = active ? Math.round((reviewed / active) * 100) : 0;
-  const percentDeleted = total ? Math.round((deleted / total) * 100) : 0;
-  const notInSnapshot = Math.max(0, allVaultFilesCount - active);
+export function isExcluded(
+  filePath: string,
+  excludedFolders: string[],
+): boolean {
+  return excludedFolders.some((folder) => filePath.startsWith(`${folder}/`));
+}
+
+export function computeStats(reviewedCount: number, eligibleCount: number) {
+  const notReviewed = eligibleCount - reviewedCount;
+  const percentCompleted = eligibleCount
+    ? Math.round((reviewedCount / eligibleCount) * 100)
+    : 0;
 
   return {
-    total,
-    deleted,
-    reviewed,
-    toReview,
-    active,
+    reviewed: reviewedCount,
+    eligible: eligibleCount,
+    notReviewed,
     percentCompleted,
-    percentDeleted,
-    notInSnapshot,
   };
 }
 
-export function rewritePaths(
-  files: SnapshotFile[],
+export function rewriteReviewedPaths(
+  reviewedPaths: Set<string>,
   oldPath: string,
   newPath: string,
 ): boolean {
   const oldPrefix = `${oldPath}/`;
   const newPrefix = `${newPath}/`;
+  const toAdd: string[] = [];
   let changed = false;
-  for (const f of files) {
-    if (f.path.startsWith(oldPrefix)) {
-      f.path = newPrefix + f.path.slice(oldPrefix.length);
+  for (const p of reviewedPaths) {
+    if (p.startsWith(oldPrefix)) {
+      reviewedPaths.delete(p);
+      toAdd.push(newPrefix + p.slice(oldPrefix.length));
       changed = true;
     }
+  }
+  for (const p of toAdd) {
+    reviewedPaths.add(p);
   }
   return changed;
 }
 
-export function markFolderDeleted(
-  files: SnapshotFile[],
+export function removeByPrefix(
+  reviewedPaths: Set<string>,
   folderPath: string,
 ): boolean {
   const prefix = `${folderPath}/`;
   let changed = false;
-  for (const f of files) {
-    if (f.path.startsWith(prefix) && f.status !== "deleted") {
-      f.status = "deleted";
+  for (const p of reviewedPaths) {
+    if (p.startsWith(prefix)) {
+      reviewedPaths.delete(p);
       changed = true;
     }
   }
