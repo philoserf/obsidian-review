@@ -14,6 +14,7 @@ import {
 } from "obsidian";
 
 type PluginData = {
+  schemaVersion: number;
   snapshot?: Snapshot;
   showStatusBar: boolean;
 };
@@ -32,7 +33,10 @@ export type ReviewStatus = "to_review" | "reviewed" | "deleted";
 
 type DisplayStatus = ReviewStatus | "new";
 
+const CURRENT_SCHEMA_VERSION = 1;
+
 const DEFAULT_SETTINGS: PluginData = {
+  schemaVersion: CURRENT_SCHEMA_VERSION,
   showStatusBar: true,
 };
 
@@ -218,11 +222,10 @@ export default class ReviewPlugin extends Plugin {
       const leaf = this.app.workspace.getLeaf(newLeaf);
       leaf.openFile(targetFile);
     } else {
-      new Notice(`Cannot find a file ${file.path}`);
-      if (this.data.snapshot) {
-        this.data.snapshot.files = this.data.snapshot.files.filter(
-          (fp) => fp.path !== file.path,
-        );
+      new Notice(`Cannot find file: ${file.path}`);
+      const snapshotFile = this.getSnapshotFile(file.path);
+      if (snapshotFile) {
+        snapshotFile.status = "deleted";
         this.statusBar.update();
         await this.saveSettings();
       }
@@ -306,7 +309,19 @@ export default class ReviewPlugin extends Plugin {
   };
 
   private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
+    if (!this.data.snapshot) return;
+
     if (file instanceof TFolder) {
+      const oldPrefix = `${oldPath}/`;
+      const newPrefix = `${file.path}/`;
+      let changed = false;
+      for (const f of this.data.snapshot.files) {
+        if (f.path.startsWith(oldPrefix)) {
+          f.path = newPrefix + f.path.slice(oldPrefix.length);
+          changed = true;
+        }
+      }
+      if (changed) await this.saveSettings();
       return;
     }
 
