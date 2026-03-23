@@ -563,24 +563,15 @@ class ConfirmSnapshotDeleteModal extends Modal {
   }
 }
 
-const ACTIONS = {
-  open_random: {
-    name: "Open random not reviewed file",
-  },
-  review: {
-    name: "Review file",
-  },
-  review_and_next: {
-    name: "Review file and open next random file",
-  },
-  unreview: {
-    name: "Unreview file",
-  },
-} as const;
+type Suggestion = { id: string; name: string };
 
-type Action = keyof typeof ACTIONS;
+const PLACEHOLDER: Record<string, string> = {
+  new: "This file is not in snapshot",
+  to_review: "This file is not reviewed",
+  reviewed: "This file is reviewed",
+};
 
-class FileStatusControllerModal extends SuggestModal<Action> {
+class FileStatusControllerModal extends SuggestModal<Suggestion> {
   plugin: ReviewPlugin;
 
   constructor(app: App, plugin: ReviewPlugin) {
@@ -588,58 +579,61 @@ class FileStatusControllerModal extends SuggestModal<Action> {
     this.plugin = plugin;
 
     const fileStatus = this.plugin.getActiveFileStatus();
-    this.setPlaceholder(
-      !fileStatus
-        ? ""
-        : fileStatus === "new"
-          ? "This file is not in snapshot"
-          : fileStatus === "to_review"
-            ? "This file is not reviewed"
-            : "This file is reviewed",
-    );
+    this.setPlaceholder(fileStatus ? (PLACEHOLDER[fileStatus] ?? "") : "");
   }
 
-  getSuggestions = (query: string): Action[] => {
+  getSuggestions = (query: string): Suggestion[] => {
     const activeFile = this.plugin.getActiveFile();
-    let actions: Action[] = [];
+    let suggestions: Suggestion[];
 
     if (!activeFile) {
-      actions = ["open_random"];
+      suggestions = [
+        { id: "open_random", name: "Open random not reviewed file" },
+      ];
     } else {
       const isReviewed =
         this.plugin.getSnapshotFile(activeFile.path)?.status === "reviewed";
 
       if (isReviewed) {
-        actions = ["open_random", "unreview"];
+        suggestions = [
+          { id: "open_random", name: "Open random not reviewed file" },
+          { id: "unreview", name: "Unreview file" },
+        ];
       } else {
-        actions = ["review_and_next", "review", "open_random"];
+        suggestions = [
+          {
+            id: "review_and_next",
+            name: "Review file and open next random file",
+          },
+          { id: "review", name: "Review file" },
+          { id: "open_random", name: "Open random not reviewed file" },
+        ];
       }
     }
 
-    return actions.filter((a) =>
-      ACTIONS[a].name.toLowerCase().includes(query.toLowerCase()),
+    return suggestions.filter((s) =>
+      s.name.toLowerCase().includes(query.toLowerCase()),
     );
   };
 
-  renderSuggestion = (action: Action, el: HTMLElement) => {
-    el.createEl("div", { text: ACTIONS[action].name });
+  renderSuggestion = (suggestion: Suggestion, el: HTMLElement) => {
+    el.createEl("div", { text: suggestion.name });
   };
 
-  onChooseSuggestion = (action: Action, _evt: MouseEvent | KeyboardEvent) => {
-    if (action === "open_random") {
-      this.plugin.openRandomFile();
-    }
-
-    if (action === "review") {
-      this.plugin.completeReview();
-    }
-
-    if (action === "review_and_next") {
-      this.plugin.completeReview({ openNext: true });
-    }
-
-    if (action === "unreview") {
-      this.plugin.unreviewFile();
+  onChooseSuggestion = (suggestion: Suggestion) => {
+    switch (suggestion.id) {
+      case "open_random":
+        this.plugin.openRandomFile();
+        break;
+      case "review":
+        this.plugin.completeReview();
+        break;
+      case "review_and_next":
+        this.plugin.completeReview({ openNext: true });
+        break;
+      case "unreview":
+        this.plugin.unreviewFile();
+        break;
     }
   };
 }
