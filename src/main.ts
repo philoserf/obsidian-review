@@ -82,6 +82,21 @@ export function rewritePaths(
   return changed;
 }
 
+export function markFolderDeleted(
+  files: SnapshotFile[],
+  folderPath: string,
+): boolean {
+  const prefix = `${folderPath}/`;
+  let changed = false;
+  for (const f of files) {
+    if (f.path.startsWith(prefix) && f.status !== "deleted") {
+      f.status = "deleted";
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 export default class ReviewPlugin extends Plugin {
   data!: PluginData;
 
@@ -343,7 +358,15 @@ export default class ReviewPlugin extends Plugin {
   };
 
   private handleFileDelete = async (file: TAbstractFile) => {
-    if (file instanceof TFolder || !this.data.snapshot) {
+    if (!this.data.snapshot) {
+      return;
+    }
+
+    if (file instanceof TFolder) {
+      if (markFolderDeleted(this.data.snapshot.files, file.path)) {
+        this.statusBar.update();
+        await this.saveSettings();
+      }
       return;
     }
 

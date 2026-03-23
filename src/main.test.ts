@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { computeStats, rewritePaths, type SnapshotFile } from "./main";
+import {
+  computeStats,
+  markFolderDeleted,
+  rewritePaths,
+  type SnapshotFile,
+} from "./main";
 
 function file(path: string, status: SnapshotFile["status"]): SnapshotFile {
   return { path, status };
@@ -78,5 +83,50 @@ describe("rewritePaths", () => {
     const changed = rewritePaths(files, "folder", "renamed");
     expect(changed).toBe(false);
     expect(files[0].path).toBe("folder-extra/a.md");
+  });
+});
+
+describe("markFolderDeleted", () => {
+  test("marks all contained files as deleted", () => {
+    const files = [
+      file("folder/a.md", "to_review"),
+      file("folder/sub/b.md", "reviewed"),
+      file("other/c.md", "to_review"),
+    ];
+    const changed = markFolderDeleted(files, "folder");
+    expect(changed).toBe(true);
+    expect(files[0].status).toBe("deleted");
+    expect(files[1].status).toBe("deleted");
+    expect(files[2].status).toBe("to_review");
+  });
+
+  test("returns false when no files match", () => {
+    const files = [file("other/a.md", "to_review")];
+    expect(markFolderDeleted(files, "folder")).toBe(false);
+  });
+
+  test("does not match path that only shares a prefix", () => {
+    const files = [file("folder-extra/a.md", "to_review")];
+    expect(markFolderDeleted(files, "folder")).toBe(false);
+    expect(files[0].status).toBe("to_review");
+  });
+
+  test("skips files already marked as deleted", () => {
+    const files = [
+      file("folder/a.md", "deleted"),
+      file("folder/b.md", "to_review"),
+    ];
+    const changed = markFolderDeleted(files, "folder");
+    expect(changed).toBe(true);
+    expect(files[0].status).toBe("deleted");
+    expect(files[1].status).toBe("deleted");
+  });
+
+  test("returns false when all contained files already deleted", () => {
+    const files = [
+      file("folder/a.md", "deleted"),
+      file("folder/b.md", "deleted"),
+    ];
+    expect(markFolderDeleted(files, "folder")).toBe(false);
   });
 });
