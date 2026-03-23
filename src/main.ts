@@ -359,7 +359,6 @@ class ReviewSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    // Review section
     const reviewSetting = new Setting(containerEl)
       .setName("Review")
       .setDesc(
@@ -376,7 +375,6 @@ class ReviewSettingTab extends PluginSettingTab {
       });
     });
 
-    // Stats
     const eligible = this.plugin.getEligibleFiles();
     const reviewedCount = eligible.filter((f) =>
       this.plugin.reviewedPaths.has(f.path),
@@ -391,25 +389,21 @@ class ReviewSettingTab extends PluginSettingTab {
       div.createEl("p").setText(`Not reviewed: ${stats.notReviewed}`);
     });
 
-    // Excluded folders
     new Setting(containerEl)
       .setName("Excluded folders")
       .setDesc("Files in these folders will not appear in review.");
 
     for (let i = 0; i < this.plugin.data.excludedFolders.length; i++) {
+      const updateFolder = async (value: string) => {
+        this.plugin.data.excludedFolders[i] = value.replace(/\/+$/, "");
+        this.plugin.statusBar.update();
+        await this.plugin.saveSettings();
+      };
       new Setting(containerEl)
         .addText((text) => {
           text.setValue(this.plugin.data.excludedFolders[i]);
-          text.onChange(async (value) => {
-            this.plugin.data.excludedFolders[i] = value.replace(/\/+$/, "");
-            this.plugin.statusBar.update();
-            await this.plugin.saveSettings();
-          });
-          new FolderSuggest(this.app, text.inputEl, async (value) => {
-            this.plugin.data.excludedFolders[i] = value.replace(/\/+$/, "");
-            this.plugin.statusBar.update();
-            await this.plugin.saveSettings();
-          });
+          text.onChange(updateFolder);
+          new FolderSuggest(this.app, text.inputEl, updateFolder);
         })
         .addButton((btn) => {
           btn.setIcon("trash");
@@ -431,7 +425,6 @@ class ReviewSettingTab extends PluginSettingTab {
       });
     });
 
-    // Status bar toggle
     new Setting(containerEl)
       .setName("Status bar")
       .setDesc("Show file review status in the status bar.")
