@@ -2,6 +2,6 @@ _extends: .github
 
 repository:
   name: obsidian-review
-  description: "This plugin allows you to create a snapshot of your vault and randomly review files from it 1-by-1."
+  description: "An Obsidian plugin to randomly review your vault notes and track progress."
   topics:
     - obsidian-plugin
