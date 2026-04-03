@@ -1,4 +1,4 @@
-.in-snapshot {
+.review-stats {
   display: flex;
   flex-direction: column;
   gap: var(--size-2-2);
