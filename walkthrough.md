@@ -1,43 +1,89 @@
-# Review Plugin Walkthrough
+# Obsidian Review Plugin Walkthrough
 
-*2026-03-24T01:26:14Z by Showboat 0.6.1*
-<!-- showboat-id: fa7d392e-b720-4120-a4ad-2cde5b226282 -->
+*2026-04-03T18:39:34Z by Showboat 0.6.1*
+<!-- showboat-id: 7c052422-77a0-466e-be5e-d9c1dcd9461b -->
 
 ## Overview
 
-An Obsidian plugin that helps users randomly review vault notes and track progress. The plugin maintains a `Set<string>` of reviewed file paths — every markdown file in the vault is implicitly part of the review. Files are either reviewed or not reviewed; the vault itself is the source of truth for which files exist.
+**Obsidian Review** is a community plugin for [Obsidian](https://obsidian.md) that lets users randomly review vault notes and track their progress. It presents unreviewed markdown files one at a time, marks them as reviewed, and persists progress across sessions.
 
-**Key features:** random file selection, status bar indicator, review menu modal, excluded folders, review reset.
+**Key technologies:** TypeScript, Bun (runtime & bundler), Biome (lint/format), Obsidian Plugin API.
 
-**Tech stack:** TypeScript, Obsidian API, Bun (bundler + test runner), Biome (lint/format).
+**Entry point:** `src/main.ts` — exports `ReviewPlugin`, the `Plugin` subclass Obsidian loads.
+
+**Source files:**
+- `src/main.ts` — Plugin class, data model, commands, settings UI, status bar, modals
+- `src/folderSuggest.ts` — Autocomplete suggest for folder exclusion input
+- `src/main.test.ts` — Unit tests for pure logic functions
+- `src/__mocks__/obsidian.ts` — Mock of the `obsidian` module for Bun test runner
+- `build.ts` — Build script using Bun's native bundler
+- `version-bump.ts` — Syncs version from `package.json` to `manifest.json` and `versions.json`
 
 ## Architecture
 
-The plugin is a single-file application (`src/main.ts`) with one utility module (`src/folderSuggest.ts`). Four exported pure functions handle testable logic; the rest is Obsidian API integration.
+### Directory Layout
 
 ```bash
-find src build.ts version-bump.ts -name '*.ts' | sort | while read f; do echo "$f ($(wc -l < "$f") lines)"; done
+cat <<'HEREDOC'
+obsidian-review/
+├── src/
+│   ├── main.ts            # Plugin class, commands, settings, modals
+│   ├── folderSuggest.ts   # Folder autocomplete for settings
+│   ├── main.test.ts       # Unit tests (bun:test)
+│   └── __mocks__/
+│       └── obsidian.ts    # Mock obsidian module for tests
+├── build.ts               # Bun bundler script
+├── version-bump.ts        # Version sync across manifest files
+├── biome.json             # Linter/formatter config
+├── tsconfig.json          # TypeScript config
+├── manifest.json          # Obsidian plugin manifest
+├── versions.json          # Version → minAppVersion mapping
+├── styles.css             # Plugin styles
+├── main.js                # Built output (CJS)
+└── package.json           # Project metadata & scripts
+HEREDOC
 ```
 
 ```output
-build.ts (      18 lines)
-src/__mocks__/obsidian.ts (      67 lines)
-src/folderSuggest.ts (      31 lines)
-src/main.test.ts (     107 lines)
-src/main.ts (     566 lines)
-version-bump.ts (      19 lines)
+obsidian-review/
+├── src/
+│   ├── main.ts            # Plugin class, commands, settings, modals
+│   ├── folderSuggest.ts   # Folder autocomplete for settings
+│   ├── main.test.ts       # Unit tests (bun:test)
+│   └── __mocks__/
+│       └── obsidian.ts    # Mock obsidian module for tests
+├── build.ts               # Bun bundler script
+├── version-bump.ts        # Version sync across manifest files
+├── biome.json             # Linter/formatter config
+├── tsconfig.json          # TypeScript config
+├── manifest.json          # Obsidian plugin manifest
+├── versions.json          # Version → minAppVersion mapping
+├── styles.css             # Plugin styles
+├── main.js                # Built output (CJS)
+└── package.json           # Project metadata & scripts
 ```
 
-## Data Model
+### Data Flow
 
-The plugin persists a flat JSON object via Obsidian's `loadData`/`saveData`. At runtime, `reviewedPaths` is deserialized into a `Set<string>` for O(1) lookups.
+1. Obsidian loads the plugin → `onload()` runs
+2. Plugin reads persisted `PluginData` from disk → merges with defaults → builds a `Set<string>` of reviewed paths
+3. User triggers a command (ribbon icon, command palette, status bar click) → plugin queries eligible files, filters by reviewed status, picks one at random
+4. User marks a file reviewed → path added to the Set → data saved to disk
+5. File renames/deletes → plugin rewrites or removes affected paths from the Set
+
+All state lives in a single JSON blob managed by the Obsidian `Plugin.loadData()`/`saveData()` API. The in-memory `Set<string>` is the authoritative runtime copy; it serializes back to an array on save.
+
+## Core Walkthrough
+
+### Data Model
+
+The plugin persists a flat `PluginData` object. Schema version 2 removed a legacy nested `settings` and `snapshot` shape.
 
 ```bash
-sed -n '16,31p' src/main.ts
+head -32 src/main.ts | tail -16
 ```
 
 ```output
-
 type PluginData = {
   schemaVersion: number;
   reviewedPaths: string[];
@@ -53,40 +99,35 @@ const DEFAULT_DATA: PluginData = {
   reviewedPaths: [],
   excludedFolders: [],
   showStatusBar: true,
+};
 ```
 
-## Exported Functions
+### Pure Utility Functions
 
-Four pure functions are exported for direct testing. They handle exclusion checks, stats computation, and set mutations for folder rename/delete events.
+Four pure functions are exported for testability. They handle path matching, stats computation, and bulk path rewriting.
 
-### isExcluded
-
-Checks whether a file path falls under any excluded folder using prefix matching with a trailing slash to avoid false positives (e.g., `templates/` won't match `templates-extra/`).
+**`isExcluded`** checks whether a file path falls under any excluded folder using a prefix match with a trailing slash (preventing `templates-extra/` from matching `templates/`).
 
 ```bash
-sed -n '33,38p' src/main.ts
+head -39 src/main.ts | tail -6
 ```
 
 ```output
-
 export function isExcluded(
   filePath: string,
   excludedFolders: string[],
 ): boolean {
   return excludedFolders.some((folder) => filePath.startsWith(`${folder}/`));
+}
 ```
 
-### computeStats
-
-Derives review statistics from two counts. No access to the file list — the caller provides already-counted values.
+**`computeStats`** derives review progress from counts — no side effects, no dependencies.
 
 ```bash
-sed -n '40,52p' src/main.ts
+head -53 src/main.ts | tail -12
 ```
 
 ```output
-
-export function computeStats(reviewedCount: number, eligibleCount: number) {
   const notReviewed = eligibleCount - reviewedCount;
   const percentCompleted = eligibleCount
     ? Math.round((reviewedCount / eligibleCount) * 100)
@@ -98,19 +139,20 @@ export function computeStats(reviewedCount: number, eligibleCount: number) {
     notReviewed,
     percentCompleted,
   };
+}
 ```
 
-### rewriteReviewedPaths
+**`rewriteReviewedPaths`** handles folder renames — rewrites all paths under the old prefix to the new one. Mutates the Set in place, returns whether anything changed.
 
-Handles folder renames by updating all reviewed paths under the old prefix. Uses a two-pass approach: collect paths to add in a buffer, then apply them after iteration completes.
+**`removeByPrefix`** handles folder deletions — removes all paths under a folder prefix.
+
+Both use the same `${folder}/` prefix guard to avoid false matches.
 
 ```bash
-sed -n '54,74p' src/main.ts
+head -90 src/main.ts | tail -35
 ```
 
 ```output
-
-export function rewriteReviewedPaths(
   reviewedPaths: Set<string>,
   oldPath: string,
   newPath: string,
@@ -130,17 +172,7 @@ export function rewriteReviewedPaths(
     reviewedPaths.add(p);
   }
   return changed;
-```
-
-### removeByPrefix
-
-Handles folder deletions by removing all reviewed paths under the folder prefix.
-
-```bash
-sed -n '76,89p' src/main.ts
-```
-
-```output
+}
 
 export function removeByPrefix(
   reviewedPaths: Set<string>,
@@ -155,18 +187,91 @@ export function removeByPrefix(
     }
   }
   return changed;
+}
 ```
 
-## Plugin Lifecycle
+### Plugin Lifecycle
 
-`ReviewPlugin` extends Obsidian's `Plugin` base class. On load, it deserializes settings, registers commands, event handlers, and UI elements.
-
-### Settings Load/Save
-
-Settings are loaded from Obsidian's data store, merged with defaults, and migrated from older schema versions. The `reviewedPaths` array is converted to a `Set` for runtime use. On save, the Set is spread back to an array for JSON serialization.
+`ReviewPlugin` extends `Plugin`. Obsidian calls `onload()` at startup. The plugin:
+1. Loads and migrates persisted data
+2. Adds a ribbon icon (eye icon) that opens the review menu
+3. Creates a clickable status bar element
+4. Registers five commands
+5. Registers vault event handlers for rename and delete
+6. Adds a settings tab
 
 ```bash
-sed -n '153,172p' src/main.ts
+head -151 src/main.ts | tail -59
+```
+
+```output
+  data!: PluginData;
+  private reviewedPaths!: Set<string>;
+  statusBar!: StatusBar;
+
+  onload = async () => {
+    await this.loadSettings();
+
+    this.addRibbonIcon("scan-eye", "Open review", () => {
+      this.openReviewMenu();
+    });
+
+    this.statusBar = new StatusBar(this.addStatusBarItem(), this);
+
+    this.addCommand({
+      id: "open-random-unreviewed",
+      name: "Open random unreviewed file",
+      callback: () => this.openRandomFile(),
+    });
+    this.addCommand({
+      id: "mark-reviewed",
+      name: "Mark file as reviewed",
+      checkCallback: (checking) => {
+        if (this.getActiveFileStatus() !== "not_reviewed") return false;
+        if (!checking) this.markReviewed();
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "mark-reviewed-and-open-next",
+      name: "Mark file as reviewed and open next",
+      checkCallback: (checking) => {
+        if (this.getActiveFileStatus() !== "not_reviewed") return false;
+        if (!checking) this.markReviewed({ openNext: true });
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "mark-unreviewed",
+      name: "Mark file as unreviewed",
+      checkCallback: (checking) => {
+        if (this.getActiveFileStatus() !== "reviewed") return false;
+        if (!checking) this.markUnreviewed();
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "open-review-menu",
+      name: "Open review menu",
+      callback: () => this.openReviewMenu(),
+    });
+
+    this.addSettingTab(new ReviewSettingTab(this.app, this));
+
+    this.registerEvent(this.app.vault.on("rename", this.handleFileRename));
+    this.registerEvent(this.app.vault.on("delete", this.handleFileDelete));
+    this.registerEvent(
+      this.app.workspace.on("file-open", this.statusBar.update),
+    );
+  };
+```
+
+### Settings Load & Migration
+
+`loadSettings` merges saved data with defaults. It also handles migration from a pre-1.2 schema where `showStatusBar` was nested inside a `settings` object. Legacy `settings` and `snapshot` keys are deleted, and the schema version is bumped to current.
+
+```bash
+head -167 src/main.ts | tail -15
 ```
 
 ```output
@@ -185,50 +290,21 @@ sed -n '153,172p' src/main.ts
     this.data.schemaVersion = CURRENT_SCHEMA_VERSION;
     this.reviewedPaths = new Set(this.data.reviewedPaths);
   };
-
-  saveSettings = async () => {
-    this.data.reviewedPaths = [...this.reviewedPaths];
-    await this.saveData(this.data);
-  };
 ```
 
-### File Status and Eligibility
+### Core Actions
 
-A file's review status is derived at runtime — never stored. `getActiveFileStatus` returns `"reviewed"`, `"not_reviewed"`, or `undefined` (for non-markdown or excluded files).
+**Opening a random file:** Filters eligible files to those not yet reviewed, picks one at random via `Math.random()`, and opens it in the current leaf.
+
+**Marking reviewed:** Adds the active file's path to the Set, records `reviewStartedAt` on first mark, saves, and optionally opens the next random file.
+
+**Reset:** Clears all progress after a confirmation modal.
 
 ```bash
-sed -n '185,199p' src/main.ts
+head -262 src/main.ts | tail -50
 ```
 
 ```output
-  isFileEligible = (path: string): boolean => {
-    return !isExcluded(path, this.data.excludedFolders);
-  };
-
-  getEligibleFiles = (): TFile[] => {
-    return this.app.vault
-      .getMarkdownFiles()
-      .filter((f) => this.isFileEligible(f.path));
-  };
-
-  getActiveFileStatus = (): "reviewed" | "not_reviewed" | undefined => {
-    const file = this.getActiveMarkdownFile();
-    if (!file || !this.isFileEligible(file.path)) return undefined;
-    return this.isReviewed(file.path) ? "reviewed" : "not_reviewed";
-  };
-```
-
-### Core Review Operations
-
-`markReviewed` adds a path to the reviewed set and sets `reviewStartedAt` on first use. `markUnreviewed` removes it. `resetReview` clears the entire set after confirmation. `openRandomFile` picks from eligible unreviewed files.
-
-```bash
-sed -n '211,235p' src/main.ts
-```
-
-```output
-  };
-
   openRandomFile = () => {
     const files = this.getEligibleFiles().filter(
       (f) => !this.isReviewed(f.path),
@@ -252,21 +328,44 @@ sed -n '211,235p' src/main.ts
     }
 
     this.statusBar.update();
+    await this.saveSettings();
+
+    if (openNext) this.openRandomFile();
+  };
+
+  markUnreviewed = async () => {
+    const file = this.getActiveMarkdownFile();
+    if (!file) return;
+
+    this.reviewedPaths.delete(file.path);
+    this.statusBar.update();
+    await this.saveSettings();
+  };
+
+  resetReview = async ({
+    confirm = true,
+  }: {
+    confirm?: boolean;
+  } = {}): Promise<boolean> => {
+    if (confirm && !(await this.confirmReset())) return false;
+
+    this.reviewedPaths.clear();
+    this.data.reviewStartedAt = undefined;
+    this.statusBar.update();
+    await this.saveSettings();
+    return true;
+  };
 ```
 
-### Event Handlers
+### Vault Event Handlers
 
-Vault rename and delete events keep the reviewed set in sync. Folder operations delegate to the exported pure functions; single-file operations use direct Set manipulation.
+The plugin listens for file renames and deletes to keep the reviewed paths Set consistent. Both handle files and folders differently — folder operations use the bulk `rewriteReviewedPaths` / `removeByPrefix` helpers.
 
 ```bash
-sed -n '267,296p' src/main.ts
+head -300 src/main.ts | tail -30
 ```
 
 ```output
-      modal.open();
-    });
-  };
-
   private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
     if (file instanceof TFolder) {
       if (rewriteReviewedPaths(this.reviewedPaths, oldPath, file.path)) {
@@ -293,19 +392,22 @@ sed -n '267,296p' src/main.ts
 
     if (this.isReviewed(file.path)) {
       this.reviewedPaths.delete(file.path);
+      this.statusBar.update();
+      await this.saveSettings();
+    }
+  };
 ```
 
-## UI Components
+### Status Bar
 
-### StatusBar
-
-Displays "Reviewed" or "Not reviewed" for the active file. Hidden when the file is non-markdown, excluded, or the setting is disabled. The click listener is registered via `plugin.registerDomEvent` so Obsidian automatically removes it on plugin unload.
+The `StatusBar` class manages a clickable status bar element that shows "Reviewed" or "Not reviewed" for the active file. Clicking it opens a context menu to toggle status. It hides itself when the active file is ineligible or the setting is disabled.
 
 ```bash
-sed -n '304,329p' src/main.ts
+head -360 src/main.ts | tail -58
 ```
 
 ```output
+class StatusBar {
   private element: HTMLElement;
   private plugin: ReviewPlugin;
   private statusSpan: Element;
@@ -332,17 +434,144 @@ sed -n '304,329p' src/main.ts
     this.setIsVisible(this.plugin.data.showStatusBar);
 
     if (status === "reviewed") {
+      this.statusSpan.setText("Reviewed");
+    } else {
+      this.statusSpan.setText("Not reviewed");
+    }
+  };
+
+  private onClick = (event: MouseEvent) => {
+    const status = this.plugin.getActiveFileStatus();
+    if (!status) return;
+
+    const isReviewed = status === "reviewed";
+    const menu = new Menu();
+
+    menu.addItem((item) => {
+      item.setTitle("Reviewed");
+      item.setChecked(isReviewed);
+      item.onClick(() => this.plugin.markReviewed());
+    });
+    menu.addItem((item) => {
+      item.setTitle("Not reviewed");
+      item.setChecked(!isReviewed);
+      item.onClick(() => this.plugin.markUnreviewed());
+    });
+
+    menu.showAtMouseEvent(event);
+  };
+
+  private setIsVisible = (isVisible: boolean) => {
+    this.element.toggleClass("is-hidden", !isVisible);
+  };
+}
 ```
 
-### FolderSuggest
+### Review Menu Modal
 
-Autocomplete component for excluded folder inputs. Extends Obsidian's `AbstractInputSuggest` and queries `app.vault.getAllFolders()` for suggestions.
+`ReviewMenuModal` extends `SuggestModal` to provide a searchable command palette. It dynamically adjusts available actions based on the active file's review status:
+- **No eligible file open:** Only "Open random unreviewed file"
+- **File already reviewed:** "Open random" + "Mark as unreviewed"
+- **File not reviewed:** "Mark reviewed and open next" + "Mark reviewed" + "Open random"
 
 ```bash
-sed -n '3,19p' src/folderSuggest.ts
+head -566 src/main.ts | tail -70
 ```
 
 ```output
+
+class ReviewMenuModal extends SuggestModal<ReviewCommand> {
+  plugin: ReviewPlugin;
+
+  constructor(app: App, plugin: ReviewPlugin) {
+    super(app);
+    this.plugin = plugin;
+
+    const status = this.plugin.getActiveFileStatus();
+    if (status === "reviewed") {
+      this.setPlaceholder("This file is reviewed");
+    } else if (status === "not_reviewed") {
+      this.setPlaceholder("This file is not reviewed");
+    }
+  }
+
+  getSuggestions = (query: string): ReviewCommand[] => {
+    const file = this.plugin.getActiveMarkdownFile();
+    let suggestions: ReviewCommand[];
+
+    if (!file || !this.plugin.isFileEligible(file.path)) {
+      suggestions = [
+        { id: "open_random", name: "Open random unreviewed file" },
+      ];
+    } else {
+      const isReviewed = this.plugin.isReviewed(file.path);
+
+      if (isReviewed) {
+        suggestions = [
+          { id: "open_random", name: "Open random unreviewed file" },
+          { id: "unreview", name: "Mark file as unreviewed" },
+        ];
+      } else {
+        suggestions = [
+          {
+            id: "review_and_next",
+            name: "Mark file as reviewed and open next",
+          },
+          { id: "review", name: "Mark file as reviewed" },
+          { id: "open_random", name: "Open random unreviewed file" },
+        ];
+      }
+    }
+
+    return suggestions.filter((s) =>
+      s.name.toLowerCase().includes(query.toLowerCase()),
+    );
+  };
+
+  renderSuggestion = (suggestion: ReviewCommand, el: HTMLElement) => {
+    el.createEl("div", { text: suggestion.name });
+  };
+
+  onChooseSuggestion = (suggestion: ReviewCommand) => {
+    switch (suggestion.id) {
+      case "open_random":
+        this.plugin.openRandomFile();
+        break;
+      case "review":
+        this.plugin.markReviewed();
+        break;
+      case "review_and_next":
+        this.plugin.markReviewed({ openNext: true });
+        break;
+      case "unreview":
+        this.plugin.markUnreviewed();
+        break;
+    }
+  };
+}
+```
+
+### Settings Tab
+
+`ReviewSettingTab` renders the plugin's settings panel with:
+- Review status and reset button
+- Live stats display (eligible, reviewed, percent, not reviewed)
+- Dynamic excluded folders list with folder autocomplete (`FolderSuggest`)
+- Status bar toggle
+
+The excluded folder inputs use debounced saves (500ms) to avoid excessive disk writes while typing.
+
+### Folder Suggest
+
+`FolderSuggest` extends `AbstractInputSuggest` to provide autocomplete for vault folders in the settings UI. It queries all folders, filters by the current input, and calls a callback on selection.
+
+```bash
+head -31 src/folderSuggest.ts
+```
+
+```output
+import { AbstractInputSuggest, type App, type TFolder } from "obsidian";
+
 export class FolderSuggest extends AbstractInputSuggest<TFolder> {
   private onSelectCallback?: (value: string) => void;
 
@@ -360,38 +589,26 @@ export class FolderSuggest extends AbstractInputSuggest<TFolder> {
     return this.app.vault
       .getAllFolders()
       .filter((folder) => folder.path.toLowerCase().includes(lowerQuery));
+  }
+
+  renderSuggestion(folder: TFolder, el: HTMLElement): void {
+    el.setText(folder.path);
+  }
+
+  selectSuggestion(folder: TFolder): void {
+    this.setValue(folder.path);
+    this.onSelectCallback?.(folder.path);
+    this.close();
+  }
+}
 ```
 
-### Settings Panel
+### Build System
 
-The settings tab shows review progress stats, a reset button, excluded folder management with autocomplete, and a status bar toggle. Stats are derived at render time from the vault and reviewed set. Excluded folder saves are debounced at 500ms to avoid writing on every keystroke.
+`build.ts` uses Bun's native bundler. It produces a single CJS file (`main.js`) with `obsidian` and `electron` as externals. In watch mode (`--watch`), minification is off and sourcemaps are linked.
 
 ```bash
-sed -n '386,398p' src/main.ts
-```
-
-```output
-        await this.plugin.resetReview();
-        this.display();
-      });
-    });
-
-    const eligible = this.plugin.getEligibleFiles();
-    const reviewedCount = this.plugin.getReviewedCount(eligible);
-    const stats = computeStats(reviewedCount, eligible.length);
-
-    containerEl.createDiv("review-stats", (div) => {
-      div.createEl("p").setText(`Eligible files: ${stats.eligible}`);
-      div
-        .createEl("p")
-```
-
-## Build System
-
-`build.ts` uses Bun's native bundler. The `--watch` flag toggles between dev (no minification, sourcemaps) and production (minified, no sourcemaps). The `dev` script uses `bun --watch` to re-run the build on file changes.
-
-```bash
-cat build.ts
+head -18 build.ts
 ```
 
 ```output
@@ -415,51 +632,80 @@ if (!result.success) {
 export {};
 ```
 
-## Tests
+### Version Bump Script
 
-Tests cover the four exported pure functions. Tests run via Bun's built-in test runner with an Obsidian mock preloaded.
+`version-bump.ts` reads the version from `package.json` (via `npm_package_version` env var set by `bun run`) and syncs it to `manifest.json` and `versions.json`. This keeps the Obsidian plugin metadata in lockstep with the npm version.
 
 ```bash
-grep -c 'test(' src/main.test.ts
+head -19 version-bump.ts
 ```
 
 ```output
-16
+import { readFileSync, writeFileSync } from "node:fs";
+
+const targetVersion = process.env.npm_package_version;
+if (!targetVersion) {
+  throw new Error("No version found in package.json");
+}
+
+// Update manifest.json
+const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
+const { minAppVersion } = manifest;
+manifest.version = targetVersion;
+writeFileSync("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+
+// Update versions.json
+const versions = JSON.parse(readFileSync("versions.json", "utf8"));
+versions[targetVersion] = minAppVersion;
+writeFileSync("versions.json", `${JSON.stringify(versions, null, 2)}\n`);
+
+console.log(`Updated to version ${targetVersion}`);
 ```
 
+### Tests
+
+Tests cover the four exported pure functions using Bun's test runner. The `src/__mocks__/obsidian.ts` preload file stubs the `obsidian` module so that imports in `main.ts` don't fail at test time. Only pure logic is tested — plugin integration (Obsidian API calls) is not unit-tested.
+
 ```bash
-grep 'describe\|  test(' src/main.test.ts
+head -107 src/main.test.ts | tail -4
 ```
 
 ```output
-import { describe, expect, test } from "bun:test";
-describe("isExcluded", () => {
-  test("excludes file in excluded folder", () => {
-  test("excludes file in nested subfolder", () => {
-  test("does not exclude file outside excluded folders", () => {
-  test("does not exclude file with matching prefix but no slash", () => {
-  test("handles multiple excluded folders", () => {
-  test("returns false for empty excluded list", () => {
-  test("does not exclude root-level file", () => {
-describe("computeStats", () => {
-  test("computes stats for partial review", () => {
-  test("handles zero eligible files", () => {
-  test("handles fully reviewed", () => {
-describe("rewriteReviewedPaths", () => {
-  test("rewrites paths under renamed folder", () => {
-  test("returns false when no paths match", () => {
-  test("does not rewrite path that only shares a prefix", () => {
-describe("removeByPrefix", () => {
-  test("removes all paths under folder", () => {
-  test("returns false when no paths match", () => {
-  test("does not remove path that only shares a prefix", () => {
+    expect(removeByPrefix(paths, "folder")).toBe(false);
+    expect(paths.has("folder-extra/a.md")).toBe(true);
+  });
+});
 ```
+
+The test file has 13 test cases across 4 `describe` blocks:
+- `isExcluded` (7 tests) — folder matching, edge cases
+- `computeStats` (3 tests) — partial, zero, full review
+- `rewriteReviewedPaths` (3 tests) — rename, no-match, prefix guard
+- `removeByPrefix` (3 tests) — delete, no-match, prefix guard
 
 ## Concerns
 
-1. **No integration tests.** Only pure functions are tested. Plugin behavior (command guards, event handlers, settings persistence) relies on manual testing in Obsidian.
+### Code Quality
 
-2. **`saveSettings` serializes the full Set on every call.** At scale (~2,400 reviewed paths), each save allocates a new array and writes JSON to disk. Acceptable for user-initiated actions; excluded folder text input is debounced to mitigate.
+1. **God file:** `src/main.ts` (567 lines) contains the plugin class, four utility functions, three modal classes, the status bar, and the settings tab. Extracting the UI classes (`StatusBar`, `ReviewSettingTab`, `ConfirmResetModal`, `ReviewMenuModal`) into separate modules would improve readability and maintainability.
 
-3. **`getEligibleFiles` scans the vault on every call.** Called when opening a random file. Acceptable at ~2,400 files but won't scale to very large vaults.
+2. **Arrow-function class methods:** Most methods on `ReviewPlugin` and other classes are arrow function properties (`onload = async () => { ... }`). While this avoids `this`-binding issues, it deviates from standard TypeScript class conventions and prevents subclass overriding. Obsidian's `Plugin.onload()` is a conventional method override — using an arrow property works but is unconventional.
+
+3. **No `onunload()`:** The plugin does not implement `onunload()`. Obsidian cleans up `registerEvent` and `addCommand` registrations automatically, and there is no other cleanup needed, so this is fine in practice — but an empty `onunload` would signal intentionality.
+
+### Community Standards
+
+4. **Obsidian plugin guidelines compliance:** The plugin follows the standard structure (`manifest.json`, `main.js`, `styles.css`). The `minAppVersion` is set to `1.0.0`, which is correct for the APIs used.
+
+5. **No `.eslintrc` / Biome is used instead:** This is a valid modern choice. Biome config is minimal and appropriate.
+
+6. **Tests are preload-based:** The `__mocks__/obsidian.ts` uses `bun:test`'s `mock.module()` which is Bun-specific. This is fine since the project is Bun-native, but it's worth noting for portability.
+
+### Risks
+
+7. **Unbounded data growth:** `reviewedPaths` grows linearly with vault size. For a vault with thousands of files, the JSON blob and in-memory Set could become large. No pruning of stale paths (files that no longer exist) is done on load.
+
+8. **No deduplication on save:** `saveSettings` serializes the Set to an array, which is inherently deduplicated. Good.
+
+9. **Race conditions on rapid saves:** Multiple async operations (`markReviewed`, `handleFileRename`, etc.) can trigger concurrent `saveSettings()` calls. Since `saveData` is Obsidian-managed and presumably serialized, this is likely safe — but there is no explicit queue or debounce on saves outside the settings tab.
 
