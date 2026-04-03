@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.1
+
+### Fixed
+
+- Replace stale `.in-snapshot` CSS class with `.review-stats`
+- Update `actions/checkout` to v6 in Claude workflows
+
+### Changed
+
+- CI workflow updates
+- Remove `validate-plugin` script
+- Bump `@types/node` to 25.5.2
+- Update dependencies
+
 ## 2.0.0
 
 **Breaking:** Review data model redesigned. Old snapshot data is discarded on upgrade.
