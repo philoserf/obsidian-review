@@ -1,0 +1,51 @@
+# A Theory of the Review Plugin
+
+## What the system is for
+
+A person maintains a large vault of notes in Obsidian — roughly 2,400 in the author's case — and wants to periodically revisit every note, in no particular order, to prune, update, or confirm that it still belongs. The problem is not search or navigation; it is _coverage_. Without a tool, you would forget which notes you've looked at and which you haven't. The plugin exists to make this legible: at any moment you can ask "what fraction of my vault have I reviewed?" and "give me one I haven't looked at yet."
+
+The domain has exactly three entities. A **note** is any markdown file in the vault. The **review** is a single, ongoing pass through the vault — it has a start date and a set of paths that have been visited. A **folder exclusion** is a declaration that an entire directory tree is outside the review's scope: templates, daily journals, or whatever the user wants to skip. That's it. There is no concept of review quality, priority, recency of edit, or multi-pass scheduling. The review is a binary sweep: seen or not seen.
+
+## The organizing idea
+
+The load-bearing design decision — the one that distinguishes this from the system it replaced — is that **the vault is the source of truth for what files exist, and the plugin only tracks which of them have been reviewed.** Version 2.0 discarded the earlier "snapshot" model, which maintained its own copy of the vault's file list and differed from reality whenever files were created, renamed, or deleted between snapshots. The new model stores a flat `Set<string>` of reviewed file paths, and every time it needs to know what's eligible for review, it asks the vault directly via `getMarkdownFiles()`.
+
+This choice simplifies the data model to one piece of mutable state (the set of reviewed paths) plus two pieces of configuration (excluded folders and whether to show the status bar). The tradeoff is that the plugin must now be reactive to vault-level filesystem events — renames and deletes — to keep its reviewed-paths set from going stale. The `handleFileRename` and `handleFileDelete` event handlers exist solely to maintain this invariant: if a file or folder moves, the reviewed-paths must move with it; if a file or folder is deleted, its entries must be removed. The pure functions `rewriteReviewedPaths` and `removeByPrefix` encapsulate this path surgery and are the only parts of the plugin with unit tests. This is a deliberate boundary: the testable core is path-string manipulation; everything involving the Obsidian API is tested only by running the plugin.
+
+## The seams
+
+**Plugin to Obsidian API.** The plugin extends `Plugin` and communicates with Obsidian through a fixed set of touchpoints: `loadData`/`saveData` for persistence (Obsidian manages the JSON file on disk), `vault.getMarkdownFiles()` for enumeration, `vault.on("rename")`/`vault.on("delete")` for filesystem events, `workspace.getActiveFile()` for current focus, and `workspace.getLeaf().openFile()` for navigation. The plugin never reads or writes note content — it only cares about paths. The `obsidian` module is treated as a pure external: the build marks it as `external`, and the test mock (`src/__mocks__/obsidian.ts`) stubs just enough of its surface to let the pure-function tests import `main.ts` without crashing.
+
+**Settings tab to plugin state.** The `ReviewSettingTab` reads and writes `plugin.data` directly and calls `saveSettings()` to persist. It does not go through an abstraction layer; the plugin's data shape is the settings shape. The settings tab also recomputes stats on every `display()` call by calling `getEligibleFiles()` and `getReviewedCount()` — these are derived values, never stored. This means opening settings always shows the current truth, but it also means opening settings on a very large vault does a full file-list scan.
+
+**Status bar to active file.** The `StatusBar` subscribes to `file-open` events and re-renders itself by asking the plugin "what is the status of the currently active file?" It shows one of three states: hidden (non-markdown or excluded file), "Reviewed," or "Not reviewed." It also serves as an input surface: clicking it opens a context menu to toggle the file's status.
+
+**Review menu modal.** `ReviewMenuModal` is a `SuggestModal` that presents a short list of contextual actions. Its menu is constructed dynamically based on the active file's status — the priority ordering changes depending on whether the file is already reviewed or not. The "mark and open next" action is the plugin's primary workflow accelerator: it chains two operations so the user can process notes in a single-keystroke loop.
+
+**Build to distribution.** The build is a minimal Bun-native bundler invocation that produces a single `main.js` in CommonJS format (Obsidian's required module format). The built artifact is committed to the repo — Obsidian community plugins require this. The release workflow triggers on semver tags and uploads `main.js`, `styles.css`, and `manifest.json` as GitHub release assets.
+
+## What the code is shaped to accommodate
+
+**Adding new commands or menu items** is trivial — the `onload` method registers commands with Obsidian's command palette, and `ReviewMenuModal.getSuggestions` maintains the menu. New actions slot into both without structural changes.
+
+**Changing the definition of "eligible"** is straightforward: `isFileEligible` is the single predicate, and `isExcluded` is its only current rule. Adding more exclusion criteria (by tag, by frontmatter property, by filename pattern) would require only extending this predicate and adding corresponding UI in the settings tab.
+
+**Changing what "reviewed" means** — from a binary to something richer (reviewed with rating, reviewed on date, reviewed by whom) — would require rethinking the data model. The reviewed-paths set, the persistence format, the status bar's binary display, and the menu's action list all assume two states. This isn't a bug; the simplicity is the feature. But it means that requests like "show me notes I reviewed more than a year ago" or "track which review pass this was" would not be incremental changes.
+
+**Schema migration.** There is a `schemaVersion` field and a hardcoded `CURRENT_SCHEMA_VERSION = 2`, but no actual migration logic beyond the one-time v1-to-v2 cleanup in `loadSettings` (which deletes the old `settings` and `snapshot` keys and moves `showStatusBar` to the top level). The migration strategy is "load with defaults, discard unrecognized keys, overwrite schemaVersion." This works for the transition from snapshot to reviewed-paths because the two models have nothing in common to migrate. A future schema change that needed to transform existing data (e.g., adding metadata to each reviewed path) would need real migration code, and there's no framework for that — it would be ad hoc.
+
+## Where a maintainer could cause damage
+
+The most dangerous edit would be anything that breaks the invariant that `reviewedPaths` stays synchronized with the vault's actual filesystem state. The event handlers for rename and delete are the guardians of this invariant, and they have known gaps (documented in `.issues/`): renaming a file into an excluded folder leaves a stale entry; folder renames don't check exclusion. These are tolerated because the stats computation filters by eligibility at read time, so stale entries are invisible in the UI. But a change that relied on `reviewedPaths` being a strict subset of eligible paths — for example, iterating the set to build a "reviewed files" list — would be wrong unless it re-filtered.
+
+The persistence model is another fragile area. `saveSettings()` serializes the in-memory Set to an array and calls `saveData()`. Multiple async operations (markReviewed, handleFileRename, handleFileDelete) can call this concurrently. Obsidian's `saveData` presumably handles serialization, but there is no explicit lock or queue. The debounced save in the settings tab is a related concern (documented in `.issues/`): a user can close the settings tab before the debounce timer fires, losing an edit to the excluded-folders list.
+
+## Uncertainties
+
+**The `onExternalSettingsChange` hook.** This reloads settings from disk and updates the status bar. It appears to be Obsidian's mechanism for sync (e.g., when the vault is on iCloud or Dropbox and another device writes the plugin's data file). What I cannot determine from code alone is how frequently this fires, whether it can fire mid-operation, and whether it can race with a `saveSettings` call. If it can, the current implementation would overwrite in-flight changes with the disk version. The code suggests this is an accepted risk rather than an unsolved problem.
+
+**The committed `main.js`.** The built artifact is checked into the repo. This is standard for Obsidian community plugins (the plugin review process requires it), but it means every code change produces a diff in two places: the source and the minified output. The minified file is a single line and not human-reviewable. Whether the committed `main.js` is actually current relative to the source is unknowable from inspection — you have to rebuild and compare.
+
+**The "originally by Alexander" attribution** in `manifest.json` suggests this plugin was forked from someone else's work and substantially rewritten. The 2.0 changelog confirms this: the data model, the UI, and the event handling were all replaced. Whether any structural decisions from the original author's design survive in the current code — or whether any assumptions embedded in the Obsidian community plugin registry entry depend on the old behavior — I cannot tell.
+
+**Issue #51** (improve the settings tab) is open at time of writing. The settings tab is already functional but somewhat flat: the review-stats block, excluded-folder list, and status-bar toggle are laid out sequentially with no visual hierarchy. The issue asks to remove a "redundant status line" — likely referring to the settings tab's description text duplicating information shown in the stats block. This is a cosmetic concern but it touches the part of the code (the `display()` method) that is most likely to accumulate complexity as features are added.
