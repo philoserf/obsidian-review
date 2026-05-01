@@ -57,7 +57,7 @@ Never hand-create GitHub releases — the workflow attaches `main.js`, `manifest
 ## Gotchas
 
 - `tsc --noEmit` reports errors for `obsidian`, `bun:test`, and `node:fs` modules — these resolve only inside the Obsidian/Bun runtime. CI passes because it installs all type packages. Local failures are expected.
-- The `deploy` script hardcodes `~/source/philoserf/notes/.obsidian/plugins/review/` — it is not portable; other contributors must edit the path in `package.json`.
+- `bun run deploy` requires `OBSIDIAN_DEPLOY_DEST` to be set (path to the plugin folder inside a vault). See `.env.local.example`. Bun auto-loads `.env.local`.
 - If issue descriptions (line numbers, function names, code structure) don't match the current codebase, stop and flag the discrepancy before proceeding with a fix.
 
 ## Testing
