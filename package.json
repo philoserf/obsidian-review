@@ -7,7 +7,7 @@
   "license": "MIT",
   "scripts": {
     "audit": "bun audit --audit-level=critical",
-    "dev": "bun --watch run build.ts --watch",
+    "dev": "bun run build.ts --watch",
     "build": "bun run check && bun run build.ts",
     "check": "bun run typecheck && biome check .",
     "typecheck": "tsc --noEmit",
@@ -17,7 +17,7 @@
     "format:check": "biome format .",
     "version": "bun run version-bump.ts",
     "test": "bun test",
-    "deploy": "cp main.js manifest.json styles.css ~/source/philoserf/notes/.obsidian/plugins/review/"
+    "deploy": "bun run deploy.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
