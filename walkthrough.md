@@ -1,86 +1,52 @@
-# Obsidian Review Plugin Walkthrough
+# Review Walkthrough
 
-*2026-04-03T18:39:34Z by Showboat 0.6.1*
-<!-- showboat-id: 7c052422-77a0-466e-be5e-d9c1dcd9461b -->
+*2026-04-27T14:42:03Z by Showboat 0.6.1*
+<!-- showboat-id: dce9cb90-59d9-4376-b648-6737f8a20c52 -->
 
 ## Overview
 
-**Obsidian Review** is a community plugin for [Obsidian](https://obsidian.md) that lets users randomly review vault notes and track their progress. It presents unreviewed markdown files one at a time, marks them as reviewed, and persists progress across sessions.
-
-**Key technologies:** TypeScript, Bun (runtime & bundler), Biome (lint/format), Obsidian Plugin API.
-
-**Entry point:** `src/main.ts` — exports `ReviewPlugin`, the `Plugin` subclass Obsidian loads.
-
-**Source files:**
-- `src/main.ts` — Plugin class, data model, commands, settings UI, status bar, modals
-- `src/folderSuggest.ts` — Autocomplete suggest for folder exclusion input
-- `src/main.test.ts` — Unit tests for pure logic functions
-- `src/__mocks__/obsidian.ts` — Mock of the `obsidian` module for Bun test runner
-- `build.ts` — Build script using Bun's native bundler
-- `version-bump.ts` — Syncs version from `package.json` to `manifest.json` and `versions.json`
-
 ## Architecture
 
-### Directory Layout
-
 ```bash
-cat <<'HEREDOC'
-obsidian-review/
-├── src/
-│   ├── main.ts            # Plugin class, commands, settings, modals
-│   ├── folderSuggest.ts   # Folder autocomplete for settings
-│   ├── main.test.ts       # Unit tests (bun:test)
-│   └── __mocks__/
-│       └── obsidian.ts    # Mock obsidian module for tests
-├── build.ts               # Bun bundler script
-├── version-bump.ts        # Version sync across manifest files
-├── biome.json             # Linter/formatter config
-├── tsconfig.json          # TypeScript config
-├── manifest.json          # Obsidian plugin manifest
-├── versions.json          # Version → minAppVersion mapping
-├── styles.css             # Plugin styles
-├── main.js                # Built output (CJS)
-└── package.json           # Project metadata & scripts
-HEREDOC
+find . -not -path './.git/*' -not -path './node_modules/*' -not -path './main.js' -not -path './bun.lock' -type f | sort | head -25
 ```
 
 ```output
-obsidian-review/
-├── src/
-│   ├── main.ts            # Plugin class, commands, settings, modals
-│   ├── folderSuggest.ts   # Folder autocomplete for settings
-│   ├── main.test.ts       # Unit tests (bun:test)
-│   └── __mocks__/
-│       └── obsidian.ts    # Mock obsidian module for tests
-├── build.ts               # Bun bundler script
-├── version-bump.ts        # Version sync across manifest files
-├── biome.json             # Linter/formatter config
-├── tsconfig.json          # TypeScript config
-├── manifest.json          # Obsidian plugin manifest
-├── versions.json          # Version → minAppVersion mapping
-├── styles.css             # Plugin styles
-├── main.js                # Built output (CJS)
-└── package.json           # Project metadata & scripts
+./.env.local
+./.github/dependabot.yml
+./.github/settings.yml
+./.github/workflows/claude.yml
+./.github/workflows/main.yml
+./.github/workflows/release.yml
+./.gitignore
+./.issues/debounced-save-can-lose-excluded-folder-edits.md
+./.issues/floating-promises-in-sync-event-handlers.md
+./.issues/rename-into-excluded-folder-leaves-stale-reviewed-entries.md
+./biome.json
+./build.ts
+./bunfig.toml
+./CHANGELOG.md
+./CLAUDE.md
+./deploy.ts
+./LICENSE
+./manifest.json
+./package.json
+./README.md
+./src/__mocks__/obsidian.ts
+./src/folderSuggest.ts
+./src/main.test.ts
+./src/main.ts
+./styles.css
 ```
-
-### Data Flow
-
-1. Obsidian loads the plugin → `onload()` runs
-2. Plugin reads persisted `PluginData` from disk → merges with defaults → builds a `Set<string>` of reviewed paths
-3. User triggers a command (ribbon icon, command palette, status bar click) → plugin queries eligible files, filters by reviewed status, picks one at random
-4. User marks a file reviewed → path added to the Set → data saved to disk
-5. File renames/deletes → plugin rewrites or removes affected paths from the Set
-
-All state lives in a single JSON blob managed by the Obsidian `Plugin.loadData()`/`saveData()` API. The in-memory `Set<string>` is the authoritative runtime copy; it serializes back to an array on save.
 
 ## Core Walkthrough
 
 ### Data Model
 
-The plugin persists a flat `PluginData` object. Schema version 2 removed a legacy nested `settings` and `snapshot` shape.
+The plugin's persisted state is a flat `PluginData` object. It stores reviewed paths as an array (converted to a `Set` at load time for O(1) lookups), excluded folders, and a schema version for migration.
 
 ```bash
-head -32 src/main.ts | tail -16
+sed -n '17,32p' src/main.ts
 ```
 
 ```output
@@ -102,14 +68,14 @@ const DEFAULT_DATA: PluginData = {
 };
 ```
 
-### Pure Utility Functions
+### Pure Functions
 
-Four pure functions are exported for testability. They handle path matching, stats computation, and bulk path rewriting.
+Four pure functions are exported for testability. They operate on plain data structures (strings, arrays, Sets) with no Obsidian API dependency.
 
-**`isExcluded`** checks whether a file path falls under any excluded folder using a prefix match with a trailing slash (preventing `templates-extra/` from matching `templates/`).
+**`isExcluded`** — path-prefix check with a trailing slash guard so `templates` doesn't match `templates-extra/`:
 
 ```bash
-head -39 src/main.ts | tail -6
+sed -n '34,39p' src/main.ts
 ```
 
 ```output
@@ -121,13 +87,14 @@ export function isExcluded(
 }
 ```
 
-**`computeStats`** derives review progress from counts — no side effects, no dependencies.
+**`computeStats`** — derives review progress from two counts, guarding against division by zero:
 
 ```bash
-head -53 src/main.ts | tail -12
+sed -n '41,53p' src/main.ts
 ```
 
 ```output
+export function computeStats(reviewedCount: number, eligibleCount: number) {
   const notReviewed = eligibleCount - reviewedCount;
   const percentCompleted = eligibleCount
     ? Math.round((reviewedCount / eligibleCount) * 100)
@@ -142,17 +109,14 @@ head -53 src/main.ts | tail -12
 }
 ```
 
-**`rewriteReviewedPaths`** handles folder renames — rewrites all paths under the old prefix to the new one. Mutates the Set in place, returns whether anything changed.
-
-**`removeByPrefix`** handles folder deletions — removes all paths under a folder prefix.
-
-Both use the same `${folder}/` prefix guard to avoid false matches.
+**`rewriteReviewedPaths`** — bulk-renames reviewed paths when a folder is renamed. Iterates the Set, swaps old prefix for new, and returns whether anything changed:
 
 ```bash
-head -90 src/main.ts | tail -35
+sed -n '55,75p' src/main.ts
 ```
 
 ```output
+export function rewriteReviewedPaths(
   reviewedPaths: Set<string>,
   oldPath: string,
   newPath: string,
@@ -173,7 +137,15 @@ head -90 src/main.ts | tail -35
   }
   return changed;
 }
+```
 
+**`removeByPrefix`** — the delete counterpart; purges all reviewed paths under a deleted folder:
+
+```bash
+sed -n '77,90p' src/main.ts
+```
+
+```output
 export function removeByPrefix(
   reviewedPaths: Set<string>,
   folderPath: string,
@@ -190,21 +162,16 @@ export function removeByPrefix(
 }
 ```
 
-### Plugin Lifecycle
+### Plugin Entry Point
 
-`ReviewPlugin` extends `Plugin`. Obsidian calls `onload()` at startup. The plugin:
-1. Loads and migrates persisted data
-2. Adds a ribbon icon (eye icon) that opens the review menu
-3. Creates a clickable status bar element
-4. Registers five commands
-5. Registers vault event handlers for rename and delete
-6. Adds a settings tab
+`ReviewPlugin.onload` wires everything together: loads persisted data, adds a ribbon icon and five commands, creates the status bar, registers the settings tab, and subscribes to vault rename/delete events.
 
 ```bash
-head -151 src/main.ts | tail -59
+sed -n '92,151p' src/main.ts
 ```
 
 ```output
+export default class ReviewPlugin extends Plugin {
   data!: PluginData;
   private reviewedPaths!: Set<string>;
   statusBar!: StatusBar;
@@ -268,10 +235,10 @@ head -151 src/main.ts | tail -59
 
 ### Settings Load & Migration
 
-`loadSettings` merges saved data with defaults. It also handles migration from a pre-1.2 schema where `showStatusBar` was nested inside a `settings` object. Legacy `settings` and `snapshot` keys are deleted, and the schema version is bumped to current.
+`loadSettings` merges saved data with defaults, handles a legacy `settings.showStatusBar` shape from pre-1.2, and strips stale fields (`settings`, `snapshot`). The `reviewedPaths` array is immediately promoted to a `Set`.
 
 ```bash
-head -167 src/main.ts | tail -15
+sed -n '153,167p' src/main.ts
 ```
 
 ```output
@@ -292,16 +259,12 @@ head -167 src/main.ts | tail -15
   };
 ```
 
-### Core Actions
+### Core Review Flow
 
-**Opening a random file:** Filters eligible files to those not yet reviewed, picks one at random via `Math.random()`, and opens it in the current leaf.
-
-**Marking reviewed:** Adds the active file's path to the Set, records `reviewStartedAt` on first mark, saves, and optionally opens the next random file.
-
-**Reset:** Clears all progress after a confirmation modal.
+The review loop is: **open random → mark reviewed → open next**. `openRandomFile` filters eligible, unreviewed files and picks one at random. `markReviewed` adds the active file's path to the Set and optionally chains into `openRandomFile`.
 
 ```bash
-head -262 src/main.ts | tail -50
+sed -n '213,248p' src/main.ts
 ```
 
 ```output
@@ -341,28 +304,14 @@ head -262 src/main.ts | tail -50
     this.statusBar.update();
     await this.saveSettings();
   };
-
-  resetReview = async ({
-    confirm = true,
-  }: {
-    confirm?: boolean;
-  } = {}): Promise<boolean> => {
-    if (confirm && !(await this.confirmReset())) return false;
-
-    this.reviewedPaths.clear();
-    this.data.reviewStartedAt = undefined;
-    this.statusBar.update();
-    await this.saveSettings();
-    return true;
-  };
 ```
 
 ### Vault Event Handlers
 
-The plugin listens for file renames and deletes to keep the reviewed paths Set consistent. Both handle files and folders differently — folder operations use the bulk `rewriteReviewedPaths` / `removeByPrefix` helpers.
+The plugin reacts to file renames and deletes to keep `reviewedPaths` in sync. Folder operations delegate to the pure `rewriteReviewedPaths` / `removeByPrefix`; single-file operations swap the path directly.
 
 ```bash
-head -300 src/main.ts | tail -30
+sed -n '271,300p' src/main.ts
 ```
 
 ```output
@@ -400,10 +349,10 @@ head -300 src/main.ts | tail -30
 
 ### Status Bar
 
-The `StatusBar` class manages a clickable status bar element that shows "Reviewed" or "Not reviewed" for the active file. Clicking it opens a context menu to toggle status. It hides itself when the active file is ineligible or the setting is disabled.
+`StatusBar` renders "Reviewed" or "Not reviewed" for the active file and provides a click-to-toggle context menu. It hides when the active file is ineligible or the status bar is disabled in settings.
 
 ```bash
-head -360 src/main.ts | tail -58
+sed -n '303,360p' src/main.ts
 ```
 
 ```output
@@ -469,17 +418,13 @@ class StatusBar {
 
 ### Review Menu Modal
 
-`ReviewMenuModal` extends `SuggestModal` to provide a searchable command palette. It dynamically adjusts available actions based on the active file's review status:
-- **No eligible file open:** Only "Open random unreviewed file"
-- **File already reviewed:** "Open random" + "Mark as unreviewed"
-- **File not reviewed:** "Mark reviewed and open next" + "Mark reviewed" + "Open random"
+`ReviewMenuModal` (extends `SuggestModal`) presents context-sensitive actions based on whether the active file is reviewed, not reviewed, or ineligible. It's the primary UI entry point via the ribbon icon and the `open-review-menu` command.
 
 ```bash
-head -566 src/main.ts | tail -70
+sed -n '498,565p' src/main.ts
 ```
 
 ```output
-
 class ReviewMenuModal extends SuggestModal<ReviewCommand> {
   plugin: ReviewPlugin;
 
@@ -548,25 +493,14 @@ class ReviewMenuModal extends SuggestModal<ReviewCommand> {
         break;
     }
   };
-}
 ```
-
-### Settings Tab
-
-`ReviewSettingTab` renders the plugin's settings panel with:
-- Review status and reset button
-- Live stats display (eligible, reviewed, percent, not reviewed)
-- Dynamic excluded folders list with folder autocomplete (`FolderSuggest`)
-- Status bar toggle
-
-The excluded folder inputs use debounced saves (500ms) to avoid excessive disk writes while typing.
 
 ### Folder Suggest
 
-`FolderSuggest` extends `AbstractInputSuggest` to provide autocomplete for vault folders in the settings UI. It queries all folders, filters by the current input, and calls a callback on selection.
+`FolderSuggest` extends Obsidian's `AbstractInputSuggest` to provide autocomplete when typing excluded folder names in settings. It queries `app.vault.getAllFolders()` and filters by the input query.
 
 ```bash
-head -31 src/folderSuggest.ts
+cat src/folderSuggest.ts
 ```
 
 ```output
@@ -605,107 +539,75 @@ export class FolderSuggest extends AbstractInputSuggest<TFolder> {
 
 ### Build System
 
-`build.ts` uses Bun's native bundler. It produces a single CJS file (`main.js`) with `obsidian` and `electron` as externals. In watch mode (`--watch`), minification is off and sourcemaps are linked.
+`build.ts` uses Bun's native bundler. It targets CJS (Obsidian's module format), externalizes `obsidian` and `electron`, and supports a watch mode with debounced rebuilds that skips test files.
 
 ```bash
-head -18 build.ts
+sed -n '5,13p' build.ts
 ```
 
 ```output
-const watch = process.argv.includes("--watch");
-
-const result = await Bun.build({
-  entrypoints: ["src/main.ts"],
-  outdir: ".",
-  format: "cjs",
-  external: ["obsidian", "electron"],
-  minify: !watch,
-  sourcemap: watch ? "linked" : "none",
-});
-
-if (!result.success) {
-  console.error("Build failed");
-  for (const message of result.logs) console.error(message);
-  process.exit(1);
-}
-
-export {};
-```
-
-### Version Bump Script
-
-`version-bump.ts` reads the version from `package.json` (via `npm_package_version` env var set by `bun run`) and syncs it to `manifest.json` and `versions.json`. This keeps the Obsidian plugin metadata in lockstep with the npm version.
-
-```bash
-head -19 version-bump.ts
-```
-
-```output
-import { readFileSync, writeFileSync } from "node:fs";
-
-const targetVersion = process.env.npm_package_version;
-if (!targetVersion) {
-  throw new Error("No version found in package.json");
-}
-
-// Update manifest.json
-const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
-const { minAppVersion } = manifest;
-manifest.version = targetVersion;
-writeFileSync("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
-
-// Update versions.json
-const versions = JSON.parse(readFileSync("versions.json", "utf8"));
-versions[targetVersion] = minAppVersion;
-writeFileSync("versions.json", `${JSON.stringify(versions, null, 2)}\n`);
-
-console.log(`Updated to version ${targetVersion}`);
-```
-
-### Tests
-
-Tests cover the four exported pure functions using Bun's test runner. The `src/__mocks__/obsidian.ts` preload file stubs the `obsidian` module so that imports in `main.ts` don't fail at test time. Only pure logic is tested — plugin integration (Obsidian API calls) is not unit-tested.
-
-```bash
-head -107 src/main.test.ts | tail -4
-```
-
-```output
-    expect(removeByPrefix(paths, "folder")).toBe(false);
-    expect(paths.has("folder-extra/a.md")).toBe(true);
+async function build() {
+  const result = await Bun.build({
+    entrypoints: ["src/main.ts"],
+    outdir: ".",
+    format: "cjs",
+    external: ["obsidian", "electron"],
+    minify: !isWatch,
+    sourcemap: isWatch ? "linked" : "none",
   });
-});
 ```
 
-The test file has 13 test cases across 4 `describe` blocks:
-- `isExcluded` (7 tests) — folder matching, edge cases
-- `computeStats` (3 tests) — partial, zero, full review
-- `rewriteReviewedPaths` (3 tests) — rename, no-match, prefix guard
-- `removeByPrefix` (3 tests) — delete, no-match, prefix guard
+### Testing
+
+Pure functions are exported from `main.ts` and tested directly. An `__mocks__/obsidian.ts` preload stubs just enough of the Obsidian API (`Plugin`, `Modal`, `Setting`, etc.) for the import graph to resolve under `bun test`.
+
+```bash
+grep -c 'test(' src/main.test.ts
+```
+
+```output
+16
+```
+
+```bash
+grep 'describe\|test(' src/main.test.ts | head -20
+```
+
+```output
+import { describe, expect, test } from "bun:test";
+describe("isExcluded", () => {
+  test("excludes file in excluded folder", () => {
+  test("excludes file in nested subfolder", () => {
+  test("does not exclude file outside excluded folders", () => {
+  test("does not exclude file with matching prefix but no slash", () => {
+  test("handles multiple excluded folders", () => {
+  test("returns false for empty excluded list", () => {
+  test("does not exclude root-level file", () => {
+describe("computeStats", () => {
+  test("computes stats for partial review", () => {
+  test("handles zero eligible files", () => {
+  test("handles fully reviewed", () => {
+describe("rewriteReviewedPaths", () => {
+  test("rewrites paths under renamed folder", () => {
+  test("returns false when no paths match", () => {
+  test("does not rewrite path that only shares a prefix", () => {
+describe("removeByPrefix", () => {
+  test("removes all paths under folder", () => {
+  test("returns false when no paths match", () => {
+```
 
 ## Concerns
 
-### Code Quality
+The repository tracks three known issues in `.issues/`:
 
-1. **God file:** `src/main.ts` (567 lines) contains the plugin class, four utility functions, three modal classes, the status bar, and the settings tab. Extracting the UI classes (`StatusBar`, `ReviewSettingTab`, `ConfirmResetModal`, `ReviewMenuModal`) into separate modules would improve readability and maintainability.
+1. **Debounced save can lose excluded-folder edits** (medium) — If the user edits an excluded-folder text field and closes the settings tab before the 500ms debounce fires, the change is lost.
 
-2. **Arrow-function class methods:** Most methods on `ReviewPlugin` and other classes are arrow function properties (`onload = async () => { ... }`). While this avoids `this`-binding issues, it deviates from standard TypeScript class conventions and prevents subclass overriding. Obsidian's `Plugin.onload()` is a conventional method override — using an arrow property works but is unconventional.
+2. **Floating promises in sync event handlers** (low) — `handleFileRename` and `handleFileDelete` are `async` but registered via `registerEvent`, which does not await the returned promise. Errors would be unhandled rejections.
 
-3. **No `onunload()`:** The plugin does not implement `onunload()`. Obsidian cleans up `registerEvent` and `addCommand` registrations automatically, and there is no other cleanup needed, so this is fine in practice — but an empty `onunload` would signal intentionality.
+3. **Rename into excluded folder leaves stale entries** (low) — Renaming a reviewed file *into* an excluded folder keeps the path in `reviewedPaths` since the rename handler doesn't check exclusion.
 
-### Community Standards
+Additional observations:
 
-4. **Obsidian plugin guidelines compliance:** The plugin follows the standard structure (`manifest.json`, `main.js`, `styles.css`). The `minAppVersion` is set to `1.0.0`, which is correct for the APIs used.
+- **Single-module concentration** — `src/main.ts` is 566 lines containing the plugin class, three modal classes, the status bar, and the settings tab. The only extracted module is the 31-line `folderSuggest.ts`. This is manageable for the current size but will become unwieldy as features grow.
 
-5. **No `.eslintrc` / Biome is used instead:** This is a valid modern choice. Biome config is minimal and appropriate.
-
-6. **Tests are preload-based:** The `__mocks__/obsidian.ts` uses `bun:test`'s `mock.module()` which is Bun-specific. This is fine since the project is Bun-native, but it's worth noting for portability.
-
-### Risks
-
-7. **Unbounded data growth:** `reviewedPaths` grows linearly with vault size. For a vault with thousands of files, the JSON blob and in-memory Set could become large. No pruning of stale paths (files that no longer exist) is done on load.
-
-8. **No deduplication on save:** `saveSettings` serializes the Set to an array, which is inherently deduplicated. Good.
-
-9. **Race conditions on rapid saves:** Multiple async operations (`markReviewed`, `handleFileRename`, etc.) can trigger concurrent `saveSettings()` calls. Since `saveData` is Obsidian-managed and presumably serialized, this is likely safe — but there is no explicit queue or debounce on saves outside the settings tab.
-
+- **No integration tests** — Only the four exported pure functions are tested (16 tests). The plugin lifecycle, event handlers, and UI classes are untested, though this is typical for Obsidian plugins given the difficulty of mocking the full API.

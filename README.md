@@ -1,18 +1,19 @@
 # Review
 
-An Obsidian plugin to randomly review your vault notes and track progress.
+Randomly review your vault notes and track progress in [Obsidian](https://obsidian.md/). Originally by [Alexander](https://x.com/sashakryzh).
 
-Originally by [Alexander](https://x.com/sashakryzh). Redesigned and maintained by [Mark Ayers](https://github.com/philoserf).
+## You probably shouldn't install this
 
-## What
+This is personal tooling, not a general-purpose plugin. It is opinionated in ways that only make sense for one person's workflow:
 
-Review helps you systematically work through every note in your vault. Open a random unreviewed file, mark it reviewed, move on. The plugin tracks which files you've reviewed and shows your progress.
+- **Single user.** The only known installation is the maintainer's. Breaking changes ship without migration paths (see `CHANGELOG.md` — 2.0.0 replaced the snapshot data model entirely, discarding old review data on upgrade).
+- **Fork, not upstream.** This diverged from the original and is not a drop-in replacement. The data model, UI, and internal structure have all changed.
+- **Two states only.** Every markdown file is either reviewed or not reviewed. There is no priority, rating, or scheduling system.
+- **No issue triage for feature requests.** Bugs are welcome; feature requests from other users will almost always be closed as out-of-scope.
 
-## Why
+If you want something similar, the code is MIT-licensed — fork it and adapt. Don't expect upstream to accommodate your workflow.
 
-Large vaults accumulate notes that never get revisited. Review surfaces forgotten notes randomly so you can update, reorganize, or delete them. It turns an overwhelming backlog into a manageable daily habit.
-
-## How
+## How It Works
 
 Every markdown file in your vault is either **reviewed** or **not reviewed**. The plugin stores only the set of reviewed file paths — the vault itself is the source of truth for which files exist.
 
@@ -31,3 +32,7 @@ Every markdown file in your vault is either **reviewed** or **not reviewed**. Th
 **Reset** clears all review progress when you're ready to start over. Excluded folders are preserved.
 
 **Statistics** in the settings panel show eligible files, reviewed count, and completion percentage.
+
+## Alternatives
+
+- [SashaKryzh/obsidian-vault-review](https://github.com/SashaKryzh/obsidian-vault-review) — the original upstream this fork diverged from.

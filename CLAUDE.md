@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
 Obsidian plugin to randomly review vault notes and track progress.
@@ -19,6 +21,7 @@ bun run audit            # Check dependencies for critical vulnerabilities
 bun run deploy           # Copy build output to local Obsidian vault for testing
 bun run version          # Sync package.json version to manifest.json + versions.json
 bun test                 # Run tests
+bun test src/main.test.ts -t "computeStats"   # Run a single test by name
 ```
 
 ## Architecture
@@ -30,24 +33,33 @@ bun test                 # Run tests
 - **Output**: `./main.js` (CommonJS format, minified in production)
 - **Externals**: `obsidian` and `electron` are not bundled
 
+### Data Model
+
+The plugin persists only the set of reviewed file paths plus excluded folders (via Obsidian's `loadData`/`saveData` into `data.json`). The vault itself is the source of truth for which files exist — so operations like `rewriteReviewedPaths` (rename) and `removeByPrefix` (folder delete) reconcile the stored set against current vault state rather than maintaining an authoritative file list.
+
+### Modules
+
+- `src/main.ts` — plugin entry + pure logic (`computeStats`, `isExcluded`, `rewriteReviewedPaths`, `removeByPrefix`)
+- `src/folderSuggest.ts` — settings-tab folder autocomplete via Obsidian's `AbstractInputSuggest`
+- `src/__mocks__/` — Obsidian API stubs used by `bun test`
+
 ### Release Process
 
-Tag and push to trigger the GitHub Actions release workflow:
+Tag and push to trigger `.github/workflows/` release automation:
 
 ```bash
 git tag -a <version> -m "Release <version>"
 git push origin <version>
 ```
 
+Never hand-create GitHub releases — the workflow attaches `main.js`, `manifest.json`, and `styles.css` to the tag.
+
 ## Gotchas
 
 - `tsc --noEmit` reports errors for `obsidian`, `bun:test`, and `node:fs` modules — these resolve only inside the Obsidian/Bun runtime. CI passes because it installs all type packages. Local failures are expected.
+- The `deploy` script hardcodes `~/source/philoserf/notes/.obsidian/plugins/review/` — it is not portable; other contributors must edit the path in `package.json`.
 - If issue descriptions (line numbers, function names, code structure) don't match the current codebase, stop and flag the discrepancy before proceeding with a fix.
 
 ## Testing
 
-Pure logic is exported from `src/main.ts` (`computeStats`, `isExcluded`, `rewriteReviewedPaths`, `removeByPrefix`) and tested directly in `src/main.test.ts`. Plugin integration (Obsidian API calls) is not unit-tested.
-
-## Code Style
-
-Enforced by Biome: 2-space indent, organized imports, git-aware VCS integration.
+Pure logic is exported from `src/main.ts` and tested directly in `src/main.test.ts`. Plugin integration (Obsidian API calls) is not unit-tested — the `__mocks__/` stubs only cover what the pure-logic tests need.
