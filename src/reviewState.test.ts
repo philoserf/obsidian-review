@@ -4,7 +4,7 @@ import {
   isExcluded,
   removeByPrefix,
   rewriteReviewedPaths,
-} from "./main";
+} from "./reviewState";
 
 describe("isExcluded", () => {
   test("excludes file in excluded folder", () => {
