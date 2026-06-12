@@ -44,7 +44,6 @@ export class ReviewSettingTab extends PluginSettingTab {
       div
         .createEl("p")
         .setText(`Reviewed: ${stats.reviewed} (${stats.percentCompleted}%)`);
-      div.createEl("p").setText(`Not reviewed: ${stats.notReviewed}`);
     });
 
     new Setting(containerEl)
@@ -57,6 +56,7 @@ export class ReviewSettingTab extends PluginSettingTab {
         this.plugin.statusBar.update();
       };
       new Setting(containerEl)
+        .setClass("review-excluded-folder")
         .addText((text) => {
           text.setValue(this.plugin.data.excludedFolders[i]);
           text.onChange((value) => {
@@ -81,9 +81,10 @@ export class ReviewSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).addButton((btn) => {
       btn.setButtonText("Add excluded folder");
-      btn.onClick(async () => {
+      btn.onClick(() => {
+        // Not persisted yet — typing in the new row saves it, and hide()
+        // prunes rows left empty.
         this.plugin.data.excludedFolders.push("");
-        await this.plugin.saveSettings();
         this.display();
       });
     });
@@ -99,5 +100,14 @@ export class ReviewSettingTab extends PluginSettingTab {
           this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
         });
       });
+  }
+
+  hide(): void {
+    const folders = this.plugin.data.excludedFolders;
+    const pruned = folders.filter((folder) => folder !== "");
+    if (pruned.length !== folders.length) {
+      this.plugin.data.excludedFolders = pruned;
+      this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
+    }
   }
 }

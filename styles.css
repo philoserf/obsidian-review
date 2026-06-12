@@ -1,5 +1,18 @@
 .review-stats {
   display: flex;
   flex-direction: column;
-  gap: var(--size-2-2);
+  gap: var(--size-2-1);
+}
+
+.review-stats p {
+  margin: 0;
+}
+
+.review-excluded-folder {
+  padding-top: var(--size-2-2);
+  padding-bottom: var(--size-2-2);
+}
+
+.review-excluded-folder .setting-item-info {
+  display: none;
 }
