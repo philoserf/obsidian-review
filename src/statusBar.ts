@@ -44,12 +44,16 @@ export class StatusBar {
     menu.addItem((item) => {
       item.setTitle("Reviewed");
       item.setChecked(isReviewed);
-      item.onClick(() => this.plugin.markReviewed());
+      item.onClick(() =>
+        this.plugin.runAsync(this.plugin.markReviewed(), "mark reviewed"),
+      );
     });
     menu.addItem((item) => {
       item.setTitle("Not reviewed");
       item.setChecked(!isReviewed);
-      item.onClick(() => this.plugin.markUnreviewed());
+      item.onClick(() =>
+        this.plugin.runAsync(this.plugin.markUnreviewed(), "mark unreviewed"),
+      );
     });
 
     menu.showAtMouseEvent(event);

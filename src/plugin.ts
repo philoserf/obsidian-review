@@ -32,6 +32,17 @@ export default class ReviewPlugin extends Plugin {
   private state = new ReviewState();
   statusBar!: StatusBar;
 
+  /**
+   * Fire-and-forget bridge for UI callbacks that cannot await: surfaces
+   * rejections via Notice instead of letting them vanish.
+   */
+  runAsync = (promise: Promise<unknown>, label: string) => {
+    promise.catch((err) => {
+      console.error(`[review] ${label} failed`, err);
+      new Notice(`Review: ${label} failed — see console for details.`);
+    });
+  };
+
   onload = async () => {
     await this.loadSettings();
 
@@ -44,14 +55,14 @@ export default class ReviewPlugin extends Plugin {
     this.addCommand({
       id: "open-random-unreviewed",
       name: "Open random unreviewed file",
-      callback: () => this.openRandomFile(),
+      callback: () => this.runAsync(this.openRandomFile(), "open random file"),
     });
     this.addCommand({
       id: "mark-reviewed",
       name: "Mark file as reviewed",
       checkCallback: (checking) => {
         if (this.getActiveFileStatus() !== "not_reviewed") return false;
-        if (!checking) this.markReviewed();
+        if (!checking) this.runAsync(this.markReviewed(), "mark reviewed");
         return true;
       },
     });
@@ -60,7 +71,8 @@ export default class ReviewPlugin extends Plugin {
       name: "Mark file as reviewed and open next",
       checkCallback: (checking) => {
         if (this.getActiveFileStatus() !== "not_reviewed") return false;
-        if (!checking) this.markReviewed({ openNext: true });
+        if (!checking)
+          this.runAsync(this.markReviewed({ openNext: true }), "mark reviewed");
         return true;
       },
     });
@@ -69,7 +81,7 @@ export default class ReviewPlugin extends Plugin {
       name: "Mark file as unreviewed",
       checkCallback: (checking) => {
         if (this.getActiveFileStatus() !== "reviewed") return false;
-        if (!checking) this.markUnreviewed();
+        if (!checking) this.runAsync(this.markUnreviewed(), "mark unreviewed");
         return true;
       },
     });
@@ -81,8 +93,22 @@ export default class ReviewPlugin extends Plugin {
 
     this.addSettingTab(new ReviewSettingTab(this.app, this));
 
-    this.registerEvent(this.app.vault.on("rename", this.handleFileRename));
-    this.registerEvent(this.app.vault.on("delete", this.handleFileDelete));
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) =>
+        this.runAsync(
+          this.handleFileRename(file, oldPath),
+          "update review state after rename",
+        ),
+      ),
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) =>
+        this.runAsync(
+          this.handleFileDelete(file),
+          "update review state after delete",
+        ),
+      ),
+    );
     this.registerEvent(
       this.app.workspace.on("file-open", this.statusBar.update),
     );
@@ -149,7 +175,7 @@ export default class ReviewPlugin extends Plugin {
     new ReviewMenuModal(this.app, this).open();
   };
 
-  openRandomFile = () => {
+  openRandomFile = async () => {
     const eligible = this.getEligibleFiles();
     const path = this.state.pickRandomUnreviewed(eligible.map((f) => f.path));
     const randomFile = eligible.find((f) => f.path === path);
@@ -157,8 +183,7 @@ export default class ReviewPlugin extends Plugin {
       new Notice("All files are reviewed");
       return;
     }
-    const leaf = this.app.workspace.getLeaf(false);
-    leaf.openFile(randomFile);
+    await this.app.workspace.getLeaf(false).openFile(randomFile);
   };
 
   markReviewed = async ({ openNext = false }: { openNext?: boolean } = {}) => {
@@ -169,7 +194,7 @@ export default class ReviewPlugin extends Plugin {
     this.statusBar.update();
     await this.saveSettings();
 
-    if (openNext) this.openRandomFile();
+    if (openNext) await this.openRandomFile();
   };
 
   markUnreviewed = async () => {

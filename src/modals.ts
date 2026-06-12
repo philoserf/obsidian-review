@@ -96,16 +96,19 @@ export class ReviewMenuModal extends SuggestModal<ReviewCommand> {
   onChooseSuggestion = (suggestion: ReviewCommand) => {
     switch (suggestion.id) {
       case "open_random":
-        this.plugin.openRandomFile();
+        this.plugin.runAsync(this.plugin.openRandomFile(), "open random file");
         break;
       case "review":
-        this.plugin.markReviewed();
+        this.plugin.runAsync(this.plugin.markReviewed(), "mark reviewed");
         break;
       case "review_and_next":
-        this.plugin.markReviewed({ openNext: true });
+        this.plugin.runAsync(
+          this.plugin.markReviewed({ openNext: true }),
+          "mark reviewed",
+        );
         break;
       case "unreview":
-        this.plugin.markUnreviewed();
+        this.plugin.runAsync(this.plugin.markUnreviewed(), "mark unreviewed");
         break;
     }
   };

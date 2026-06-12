@@ -4,7 +4,11 @@ import type ReviewPlugin from "./plugin";
 
 export class ReviewSettingTab extends PluginSettingTab {
   plugin: ReviewPlugin;
-  private debouncedSave = debounce(() => this.plugin.saveSettings(), 500, true);
+  private debouncedSave = debounce(
+    () => this.plugin.runAsync(this.plugin.saveSettings(), "save settings"),
+    500,
+    true,
+  );
 
   constructor(app: App, plugin: ReviewPlugin) {
     super(app, plugin);
@@ -25,10 +29,12 @@ export class ReviewSettingTab extends PluginSettingTab {
     reviewSetting.addButton((btn) => {
       btn.setButtonText("Reset review");
       btn.setWarning();
-      btn.onClick(async () => {
-        await this.plugin.resetReview();
-        this.display();
-      });
+      btn.onClick(() =>
+        this.plugin.runAsync(
+          this.plugin.resetReview().then(() => this.display()),
+          "reset review",
+        ),
+      );
     });
 
     const stats = this.plugin.getStats();
@@ -57,17 +63,17 @@ export class ReviewSettingTab extends PluginSettingTab {
             applyFolder(value);
             this.debouncedSave();
           });
-          new FolderSuggest(this.app, text.inputEl, async (value) => {
+          new FolderSuggest(this.app, text.inputEl, (value) => {
             applyFolder(value);
-            await this.plugin.saveSettings();
+            this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
           });
         })
         .addButton((btn) => {
           btn.setIcon("trash");
-          btn.onClick(async () => {
+          btn.onClick(() => {
             this.plugin.data.excludedFolders.splice(i, 1);
             this.plugin.statusBar.update();
-            await this.plugin.saveSettings();
+            this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
             this.display();
           });
         });
@@ -87,10 +93,10 @@ export class ReviewSettingTab extends PluginSettingTab {
       .setDesc("Show file review status in the status bar.")
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.data.showStatusBar);
-        toggle.onChange(async (value) => {
+        toggle.onChange((value) => {
           this.plugin.data.showStatusBar = value;
           this.plugin.statusBar.update();
-          await this.plugin.saveSettings();
+          this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
         });
       });
   }
