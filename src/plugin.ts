@@ -27,6 +27,25 @@ const DEFAULT_DATA: PluginData = {
   showStatusBar: true,
 };
 
+type SavedData = Partial<PluginData> & {
+  settings?: { showStatusBar?: boolean };
+};
+
+// v1: showStatusBar lived in a nested settings object, and a since-removed
+// snapshot feature stored its state alongside it.
+function migrateV1toV2(saved: SavedData): SavedData {
+  const migrated: Record<string, unknown> = { ...saved };
+  if (
+    saved.settings?.showStatusBar !== undefined &&
+    saved.showStatusBar === undefined
+  ) {
+    migrated.showStatusBar = saved.settings.showStatusBar;
+  }
+  delete migrated.settings;
+  delete migrated.snapshot;
+  return migrated as SavedData;
+}
+
 export default class ReviewPlugin extends Plugin {
   data!: PluginData;
   private state = new ReviewState();
@@ -115,25 +134,61 @@ export default class ReviewPlugin extends Plugin {
   };
 
   loadSettings = async () => {
-    const saved = await this.loadData();
-    this.data = { ...DEFAULT_DATA, ...saved };
-    // Migrate showStatusBar from pre-1.2 nested settings shape
-    if (
-      saved?.settings?.showStatusBar !== undefined &&
-      saved.showStatusBar === undefined
-    ) {
-      this.data.showStatusBar = saved.settings.showStatusBar;
+    let saved: SavedData | null = null;
+    try {
+      saved = await this.loadData();
+    } catch (err) {
+      console.error("[review] loadData failed; starting from defaults", err);
+      new Notice(
+        "Review: could not read saved data — starting from defaults. See console for details.",
+      );
     }
-    delete (this.data as Record<string, unknown>).settings;
-    delete (this.data as Record<string, unknown>).snapshot;
-    this.data.schemaVersion = CURRENT_SCHEMA_VERSION;
+
+    const savedVersion = saved
+      ? (saved.schemaVersion ?? 1)
+      : CURRENT_SCHEMA_VERSION;
+
+    if (savedVersion > CURRENT_SCHEMA_VERSION) {
+      // Data from a newer plugin version: load what we understand, but keep
+      // the newer schemaVersion so saveSettings refuses to overwrite it.
+      console.warn(
+        `[review] data has schema v${savedVersion}, newer than v${CURRENT_SCHEMA_VERSION}; loading read-only`,
+      );
+      new Notice(
+        "Review: saved data is from a newer plugin version. Changes will not be saved until the plugin is updated.",
+      );
+      this.data = { ...DEFAULT_DATA, ...saved, schemaVersion: savedVersion };
+    } else {
+      const migrated =
+        saved && savedVersion < 2 ? migrateV1toV2(saved) : (saved ?? {});
+      this.data = {
+        ...DEFAULT_DATA,
+        ...migrated,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+      };
+    }
+
     this.state.load(this.data.reviewedPaths, this.data.reviewStartedAt);
   };
 
   saveSettings = async () => {
+    if (this.data.schemaVersion > CURRENT_SCHEMA_VERSION) {
+      console.warn(
+        `[review] not saving: data has schema v${this.data.schemaVersion}, newer than v${CURRENT_SCHEMA_VERSION}`,
+      );
+      return;
+    }
     this.data.reviewedPaths = [...this.state.reviewedPaths];
     this.data.reviewStartedAt = this.state.reviewStartedAt;
-    await this.saveData(this.data);
+    try {
+      await this.saveData(this.data);
+    } catch (err) {
+      console.error(
+        `[review] saveData failed (${this.data.reviewedPaths.length} reviewed paths, ${this.data.excludedFolders.length} excluded folders)`,
+        err,
+      );
+      throw err;
+    }
   };
 
   onExternalSettingsChange = async () => {
