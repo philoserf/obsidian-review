@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Obsidian plugin to randomly review vault notes and track progress.
 
+The current next step for this repo is tracked in the workspace backlog at `../NEXT.md` (the `obsidian-review` row). Read it when starting work; update it when that step ships.
+
 ## Development Commands
 
 ```bash
@@ -21,7 +23,7 @@ bun run audit            # Check dependencies for critical vulnerabilities
 bun run deploy           # Copy build output to local Obsidian vault for testing
 bun run version          # Sync package.json version to manifest.json + versions.json
 bun test                 # Run tests
-bun test src/main.test.ts -t "computeStats"   # Run a single test by name
+bun test src/reviewState.test.ts -t "stats"   # Run a single test by name
 ```
 
 ## Architecture
@@ -35,11 +37,16 @@ bun test src/main.test.ts -t "computeStats"   # Run a single test by name
 
 ### Data Model
 
-The plugin persists only the set of reviewed file paths plus excluded folders (via Obsidian's `loadData`/`saveData` into `data.json`). The vault itself is the source of truth for which files exist — so operations like `rewriteReviewedPaths` (rename) and `removeByPrefix` (folder delete) reconcile the stored set against current vault state rather than maintaining an authoritative file list.
+The plugin persists only the set of reviewed file paths plus excluded folders (via Obsidian's `loadData`/`saveData` into `data.json`). The vault itself is the source of truth for which files exist — so `ReviewState.renameFolder`/`renameFile` (rename) and `deleteFolder`/`deleteFile` (delete) reconcile the stored set against current vault state rather than maintaining an authoritative file list.
 
 ### Modules
 
-- `src/main.ts` — plugin entry + pure logic (`computeStats`, `isExcluded`, `rewriteReviewedPaths`, `removeByPrefix`)
+- `src/main.ts` — Obsidian entrypoint; re-exports the plugin
+- `src/plugin.ts` — `ReviewPlugin` lifecycle: commands, persistence, migration, event wiring
+- `src/reviewState.ts` — `ReviewState` (the reviewed-set state machine, no Obsidian APIs) + `isExcluded`
+- `src/statusBar.ts` — status-bar UI
+- `src/settingsTab.ts` — settings UI
+- `src/modals.ts` — confirm-reset and review-menu modals
 - `src/folderSuggest.ts` — settings-tab folder autocomplete via Obsidian's `AbstractInputSuggest`
 - `src/__mocks__/` — Obsidian API stubs used by `bun test`
 
@@ -62,4 +69,4 @@ Never hand-create GitHub releases — the workflow attaches `main.js`, `manifest
 
 ## Testing
 
-Pure logic is exported from `src/main.ts` and tested directly in `src/main.test.ts`. Plugin integration (Obsidian API calls) is not unit-tested — the `__mocks__/` stubs only cover what the pure-logic tests need.
+`ReviewState` and `isExcluded` live in `src/reviewState.ts`, free of Obsidian APIs, and are tested directly in `src/reviewState.test.ts` (clock and rng are injectable). Plugin integration (Obsidian API calls) is not unit-tested — the `__mocks__/` stubs only cover what the tests need.
