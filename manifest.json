@@ -1,7 +1,7 @@
 {
   "id": "review",
   "name": "Review",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "minAppVersion": "1.6.0",
   "description": "Randomly review your vault and track progress",
   "author": "Mark Ayers (originally by Alexander)",

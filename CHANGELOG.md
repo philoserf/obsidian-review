@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.1.0
+
+### Fixed
+
+- Declare `minAppVersion` 1.6.0 to match actual Obsidian API usage (#60)
+- Surface async failures from UI handlers via Notice instead of swallowing them (#68)
+- Handle loadData/saveData failures; act on the schema version with a downgrade guard (#61, #64)
+- "Add excluded folder" no longer persists an empty entry; empty rows are pruned when settings close (#56)
+
+### Changed
+
+- Settings tab: remove redundant "Not reviewed" stats line, tighten layout (#51)
+- Split `main.ts` into focused modules; extract testable `ReviewState` class (#59, #70)
+- Update dependencies (obsidian 1.13.1, biome 2.5, typescript 6.0.3)
+
 ## 2.0.1
 
 ### Fixed

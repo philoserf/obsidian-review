@@ -1,6 +1,6 @@
 {
   "name": "review",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Randomly review your vault and track progress",
   "main": "main.js",
   "author": "Mark Ayers",
