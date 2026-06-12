@@ -6,11 +6,7 @@ import {
   TFolder,
 } from "obsidian";
 import { ConfirmResetModal, ReviewMenuModal } from "./modals";
-import {
-  isExcluded,
-  removeByPrefix,
-  rewriteReviewedPaths,
-} from "./reviewState";
+import { isExcluded, ReviewState, type ReviewStats } from "./reviewState";
 import { ReviewSettingTab } from "./settingsTab";
 import { StatusBar } from "./statusBar";
 
@@ -33,7 +29,7 @@ const DEFAULT_DATA: PluginData = {
 
 export default class ReviewPlugin extends Plugin {
   data!: PluginData;
-  private reviewedPaths!: Set<string>;
+  private state = new ReviewState();
   statusBar!: StatusBar;
 
   onload = async () => {
@@ -105,11 +101,12 @@ export default class ReviewPlugin extends Plugin {
     delete (this.data as Record<string, unknown>).settings;
     delete (this.data as Record<string, unknown>).snapshot;
     this.data.schemaVersion = CURRENT_SCHEMA_VERSION;
-    this.reviewedPaths = new Set(this.data.reviewedPaths);
+    this.state.load(this.data.reviewedPaths, this.data.reviewStartedAt);
   };
 
   saveSettings = async () => {
-    this.data.reviewedPaths = [...this.reviewedPaths];
+    this.data.reviewedPaths = [...this.state.reviewedPaths];
+    this.data.reviewStartedAt = this.state.reviewStartedAt;
     await this.saveData(this.data);
   };
 
@@ -141,11 +138,11 @@ export default class ReviewPlugin extends Plugin {
   };
 
   isReviewed = (path: string): boolean => {
-    return this.reviewedPaths.has(path);
+    return this.state.isReviewed(path);
   };
 
-  getReviewedCount = (files: TFile[]): number => {
-    return files.filter((f) => this.isReviewed(f.path)).length;
+  getStats = (): ReviewStats => {
+    return this.state.stats(this.getEligibleFiles().map((f) => f.path));
   };
 
   openReviewMenu = () => {
@@ -153,14 +150,13 @@ export default class ReviewPlugin extends Plugin {
   };
 
   openRandomFile = () => {
-    const files = this.getEligibleFiles().filter(
-      (f) => !this.isReviewed(f.path),
-    );
-    if (!files.length) {
+    const eligible = this.getEligibleFiles();
+    const path = this.state.pickRandomUnreviewed(eligible.map((f) => f.path));
+    const randomFile = eligible.find((f) => f.path === path);
+    if (!randomFile) {
       new Notice("All files are reviewed");
       return;
     }
-    const randomFile = files[Math.floor(Math.random() * files.length)];
     const leaf = this.app.workspace.getLeaf(false);
     leaf.openFile(randomFile);
   };
@@ -169,11 +165,7 @@ export default class ReviewPlugin extends Plugin {
     const file = this.getActiveMarkdownFile();
     if (!file) return;
 
-    this.reviewedPaths.add(file.path);
-    if (!this.data.reviewStartedAt) {
-      this.data.reviewStartedAt = new Date().toISOString();
-    }
-
+    this.state.markReviewed(file.path);
     this.statusBar.update();
     await this.saveSettings();
 
@@ -184,7 +176,7 @@ export default class ReviewPlugin extends Plugin {
     const file = this.getActiveMarkdownFile();
     if (!file) return;
 
-    this.reviewedPaths.delete(file.path);
+    this.state.markUnreviewed(file.path);
     this.statusBar.update();
     await this.saveSettings();
   };
@@ -196,8 +188,7 @@ export default class ReviewPlugin extends Plugin {
   } = {}): Promise<boolean> => {
     if (confirm && !(await this.confirmReset())) return false;
 
-    this.reviewedPaths.clear();
-    this.data.reviewStartedAt = undefined;
+    this.state.reset();
     this.statusBar.update();
     await this.saveSettings();
     return true;
@@ -211,31 +202,19 @@ export default class ReviewPlugin extends Plugin {
   };
 
   private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
-    if (file instanceof TFolder) {
-      if (rewriteReviewedPaths(this.reviewedPaths, oldPath, file.path)) {
-        await this.saveSettings();
-      }
-      return;
-    }
-
-    if (this.isReviewed(oldPath)) {
-      this.reviewedPaths.delete(oldPath);
-      this.reviewedPaths.add(file.path);
-      await this.saveSettings();
-    }
+    const changed =
+      file instanceof TFolder
+        ? this.state.renameFolder(oldPath, file.path)
+        : this.state.renameFile(oldPath, file.path);
+    if (changed) await this.saveSettings();
   };
 
   private handleFileDelete = async (file: TAbstractFile) => {
-    if (file instanceof TFolder) {
-      if (removeByPrefix(this.reviewedPaths, file.path)) {
-        this.statusBar.update();
-        await this.saveSettings();
-      }
-      return;
-    }
-
-    if (this.isReviewed(file.path)) {
-      this.reviewedPaths.delete(file.path);
+    const changed =
+      file instanceof TFolder
+        ? this.state.deleteFolder(file.path)
+        : this.state.deleteFile(file.path);
+    if (changed) {
       this.statusBar.update();
       await this.saveSettings();
     }

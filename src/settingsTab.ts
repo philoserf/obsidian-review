@@ -1,7 +1,6 @@
 import { type App, debounce, PluginSettingTab, Setting } from "obsidian";
 import { FolderSuggest } from "./folderSuggest";
 import type ReviewPlugin from "./plugin";
-import { computeStats } from "./reviewState";
 
 export class ReviewSettingTab extends PluginSettingTab {
   plugin: ReviewPlugin;
@@ -32,9 +31,7 @@ export class ReviewSettingTab extends PluginSettingTab {
       });
     });
 
-    const eligible = this.plugin.getEligibleFiles();
-    const reviewedCount = this.plugin.getReviewedCount(eligible);
-    const stats = computeStats(reviewedCount, eligible.length);
+    const stats = this.plugin.getStats();
 
     containerEl.createDiv("review-stats", (div) => {
       div.createEl("p").setText(`Eligible files: ${stats.eligible}`);
