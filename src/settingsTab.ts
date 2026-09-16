@@ -120,8 +120,9 @@ export class ReviewSettingTab extends PluginSettingTab {
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.state.showStatusBar);
         toggle.onChange((value) => {
-          this.plugin.state = setShowStatusBar(this.plugin.state, value);
-          this.plugin.statusBar.update();
+          this.plugin.store.setState(
+            setShowStatusBar(this.plugin.state, value),
+          );
           this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
         });
       });
