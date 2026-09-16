@@ -71,6 +71,18 @@ describe("load", () => {
     expect(review.excludedFolders).toEqual(["new"]);
     expect(review.reviewStartedAt).toBeUndefined();
   });
+
+  // The disk path. A synced or hand-edited data.json can hold anything, and an
+  // entry with a trailing slash matches nothing because isEligible tests for a
+  // `${folder}/` prefix — the user sees the folder listed as excluded and its
+  // notes keep appearing in review.
+  test("normalizes folders coming off disk", () => {
+    const review = new Review();
+    review.load([], ["Templates/", " Daily ", "", "Daily"]);
+    expect(review.excludedFolders).toEqual(["Templates", "Daily"]);
+    expect(review.isEligible("Templates/note.md")).toBe(false);
+    expect(review.isEligible("Daily/note.md")).toBe(false);
+  });
 });
 
 describe("markReviewed", () => {
@@ -147,6 +159,20 @@ describe("rename a file", () => {
 });
 
 describe("rename a folder", () => {
+  // renameFolder maps entries independently, so a rename can collide two
+  // exclusions onto the same path.
+  test("dedupes when a rename collides two exclusions", () => {
+    const review = reviewWith([], ["A", "B"]);
+    review.rename("B", "A", true);
+    expect(review.excludedFolders).toEqual(["A"]);
+  });
+
+  test("dedupes when a nested exclusion collides with its parent", () => {
+    const review = reviewWith([], ["Meta", "Meta/Templates"]);
+    review.rename("Meta/Templates", "Meta", true);
+    expect(review.excludedFolders).toEqual(["Meta"]);
+  });
+
   test("rewrites reviewed paths under it", () => {
     const review = reviewWith(["folder/a.md", "folder/sub/b.md", "other/c.md"]);
     expect(review.rename("folder", "renamed", true)).toBe(true);
