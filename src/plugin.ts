@@ -7,45 +7,43 @@ import {
 } from "obsidian";
 import { ConfirmResetModal, ReviewMenuModal } from "./modals";
 import {
-  CURRENT_SCHEMA_VERSION,
-  EMPTY_STATE,
   isEligible,
   isReviewed,
   markReviewed,
   markUnreviewed,
-  normalizeState,
-  type PluginData,
   type PluginState,
   type ReviewStats,
   removePath,
   renamePath,
   reset,
-  serialize,
   setExcludedFolders,
   stats,
 } from "./review";
 import { ReviewSettingTab } from "./settingsTab";
 import { StatusBar } from "./statusBar";
+import { Store } from "./store";
 
 export default class ReviewPlugin extends Plugin {
-  /**
-   * The whole persisted document, as one immutable value. Replaced, never
-   * modified: every transition in review.ts is a pure function of it, so there
-   * is exactly one place to look for "what is the current state".
-   */
-  state: PluginState = EMPTY_STATE;
   statusBar!: StatusBar;
 
   /**
-   * Why writing is refused, or null when it is allowed. Set on every path
-   * through loadSettings: data we failed to read must not be overwritten by
-   * the defaults we fell back to, and data from a newer plugin version must
-   * not be truncated to what this version understands.
+   * Owns the persisted document, the write fence and the write queue. It takes
+   * loadData/saveData/Notice/console as plain functions, which is what makes
+   * the save path — the plugin's densest code — reachable from a test.
    */
-  private saveBlocked: string | null = null;
+  readonly store = new Store({
+    load: () => this.loadData(),
+    save: (data) => this.saveData(data),
+    notify: (message) => new Notice(message),
+    log: (message, err) => console.error(`[review] ${message}`, err),
+    warn: (message) => console.warn(`[review] ${message}`),
+    onChange: () => this.statusBar?.update(),
+  });
 
-  /** Tail of the serialized write queue. Never rejects. */
-  private savePending: Promise<void> = Promise.resolve();
+  /** The persisted document. Read-only here; the store owns replacement. */
+  get state(): PluginState {
+    return this.store.state;
+  }
 
   /**
    * Fire-and-forget bridge for UI callbacks that cannot await: surfaces
@@ -129,94 +127,15 @@ export default class ReviewPlugin extends Plugin {
     );
   };
 
-  loadSettings = async () => {
-    let saved: unknown = null;
-    let loadFailed = false;
-    try {
-      saved = await this.loadData();
-    } catch (err) {
-      // Distinct from `saved === null`, which is also a fresh install.
-      loadFailed = true;
-      console.error("[review] loadData failed; running read-only", err);
-      new Notice(
-        "Review: could not read saved data. The plugin is read-only until Obsidian reloads it — your saved review will not be overwritten. See console for details.",
-      );
-    }
+  loadSettings = () => this.store.reload();
 
-    // Every persisted field, schemaVersion included, passes through the one
-    // validator before anything reads it.
-    const normalized = normalizeState(saved);
-    const savedVersion = normalized.schemaVersion;
-    const isNewer = savedVersion > CURRENT_SCHEMA_VERSION;
-
-    if (isNewer) {
-      console.warn(
-        `[review] data has schema v${savedVersion}, newer than v${CURRENT_SCHEMA_VERSION}; loading read-only`,
-      );
-      new Notice(
-        "Review: saved data is from a newer plugin version. Changes will not be saved until the plugin is updated.",
-      );
-    }
-
-    // Keep a newer version's number, so the file is not truncated to v2
-    // if something later lifts the write block.
-    this.state = {
-      ...normalized,
-      schemaVersion: isNewer ? savedVersion : CURRENT_SCHEMA_VERSION,
-    };
-
-    // Assigned on every path, back to null included, so a reload after a
-    // transient read failure lifts the block.
-    if (loadFailed) {
-      this.saveBlocked = "saved data could not be read";
-    } else if (isNewer) {
-      this.saveBlocked = "saved data is from a newer plugin version";
-    } else {
-      this.saveBlocked = null;
-    }
-  };
-
-  saveSettings = (): Promise<void> => {
-    if (this.saveBlocked) {
-      console.warn(`[review] not saving: ${this.saveBlocked}`);
-      new Notice(
-        `Review: ${this.saveBlocked}. Changes will not be saved until you reload.`,
-      );
-      return Promise.resolve();
-    }
-
-    // Snapshot at call time, not write time: a queued write must carry the
-    // state that was current when it was requested, not whatever `this.state`
-    // holds by the time its turn comes.
-    const payload: PluginData = serialize(this.state);
-
-    // Serialize, so overlapping saves land in call order. Both arms run the
-    // write: a failed predecessor must not stop its successor.
-    const next = this.savePending.then(
-      () => this.writeSettings(payload),
-      () => this.writeSettings(payload),
-    );
-    this.savePending = next.catch(() => {});
-    return next;
-  };
-
-  private writeSettings = async (data: PluginData) => {
-    try {
-      await this.saveData(data);
-    } catch (err) {
-      console.error(
-        `[review] saveData failed (${data.reviewedPaths.length} reviewed paths, ${data.excludedFolders.length} excluded folders)`,
-        err,
-      );
-      throw err;
-    }
-  };
+  saveSettings = () => this.store.save();
 
   onExternalSettingsChange = async () => {
     // Settle any in-flight write first. Queued writes carry a snapshot taken at
     // call time, so one that lands after this reload would overwrite the very
     // state we are adopting from disk.
-    await this.savePending;
+    await this.store.settled;
 
     await this.loadSettings();
     this.statusBar.update();
@@ -287,34 +206,8 @@ export default class ReviewPlugin extends Plugin {
    * must not show progress that is not on disk: a refused write is declined
    * before anything changes, and a failed one is rolled back.
    */
-  private mutate = async (
-    apply: (state: PluginState) => PluginState,
-  ): Promise<boolean> => {
-    if (this.saveBlocked) {
-      new Notice(
-        `Review: ${this.saveBlocked}. Changes will not be saved until you reload.`,
-      );
-      return false;
-    }
-
-    // Settle any in-flight write first, so a rollback cannot be overtaken by
-    // a save that was already queued from the state we are about to undo.
-    await this.savePending;
-
-    const prev = this.state;
-
-    this.state = apply(prev);
-    this.statusBar.update();
-
-    try {
-      await this.saveSettings();
-      return true;
-    } catch (err) {
-      this.state = prev;
-      this.statusBar.update();
-      throw err;
-    }
-  };
+  private mutate = (apply: (state: PluginState) => PluginState) =>
+    this.store.mutate(apply);
 
   markReviewed = async ({ openNext = false }: { openNext?: boolean } = {}) => {
     const file = this.getActiveMarkdownFile();
@@ -358,8 +251,7 @@ export default class ReviewPlugin extends Plugin {
       file instanceof TFolder,
     );
     if (next !== this.state) {
-      this.state = next;
-      this.statusBar.update();
+      this.store.setState(next);
       await this.saveSettings();
     }
   };
@@ -367,8 +259,7 @@ export default class ReviewPlugin extends Plugin {
   private handleFileDelete = async (file: TAbstractFile) => {
     const next = removePath(this.state, file.path, file instanceof TFolder);
     if (next !== this.state) {
-      this.state = next;
-      this.statusBar.update();
+      this.store.setState(next);
       await this.saveSettings();
     }
   };
