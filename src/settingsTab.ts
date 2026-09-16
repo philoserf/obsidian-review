@@ -22,8 +22,13 @@ export class ReviewSettingTab extends PluginSettingTab {
   }
 
   private commit(): void {
+    // Refuse rather than fall back to []: "no drafts" means the tab is closed,
+    // not that the user cleared every folder. An `?? []` here silently persists
+    // an empty exclusion list.
+    if (!this.drafts) return;
+
     this.plugin.runAsync(
-      this.plugin.setExcludedFolders(this.drafts ?? []),
+      this.plugin.setExcludedFolders(this.drafts),
       "save excluded folders",
     );
   }
@@ -118,6 +123,10 @@ export class ReviewSettingTab extends PluginSettingTab {
   }
 
   hide(): void {
+    // Cancel before committing: a keystroke inside the debounce window leaves a
+    // pending call that would otherwise fire after `drafts` is null.
+    this.debouncedCommit.cancel();
+
     // Commit rather than prune: an edit made inside the debounce window would
     // otherwise be lost when the tab closes.
     this.commit();
