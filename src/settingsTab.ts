@@ -144,12 +144,34 @@ export class ReviewSettingTab extends PluginSettingTab {
       .setDesc("Show file review status in the status bar.")
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.state.showStatusBar);
+
+        // `setValue` re-enters `onChange` synchronously — verified in a vault,
+        // not assumed. Without this flag the correction below would ask to
+        // store the value that is already stored; today that terminates,
+        // because a transition changing nothing returns the same reference and
+        // `commit` reports success. Terminating on a distant invariant is not
+        // termination: a transition made to return a fresh object
+        // unconditionally is a change `THEORY.md` names as likely and every
+        // test would still pass, and this would spin forever.
+        let correcting = false;
+
         toggle.onChange((value) => {
+          if (correcting) return;
+
           // Through commit: a blocked write used to leave the switch flipped
           // and the bar hidden with nothing on disk, and the next reload
           // silently put it back.
           this.plugin.runAsync(
-            this.plugin.setShowStatusBar(value),
+            this.plugin.setShowStatusBar(value).then((saved) => {
+              // Obsidian moves the switch on click, before anyone knows whether
+              // the write will land. When it does not — a fenced session, a
+              // failed save — move it back, or the tab contradicts the banner
+              // directly above it by showing a preference that is not stored.
+              if (saved) return;
+              correcting = true;
+              toggle.setValue(this.plugin.state.showStatusBar);
+              correcting = false;
+            }),
             "save settings",
           );
         });
