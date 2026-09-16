@@ -12,7 +12,7 @@ import {
   type SavedData,
 } from "./data";
 import { ConfirmResetModal, ReviewMenuModal } from "./modals";
-import { pickRandom, Review, type ReviewStats } from "./review";
+import { Review, type ReviewStats } from "./review";
 import { ReviewSettingTab } from "./settingsTab";
 import { StatusBar } from "./statusBar";
 
@@ -270,8 +270,9 @@ export default class ReviewPlugin extends Plugin {
       return;
     }
 
-    const next = pickRandom(unreviewed);
-    if (next) await this.app.workspace.getLeaf(false).openFile(next);
+    // Both early returns above have already established a non-empty list.
+    const next = unreviewed[Math.floor(Math.random() * unreviewed.length)];
+    await this.app.workspace.getLeaf(false).openFile(next);
   };
 
   /**

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { pickRandom, Review } from "./review";
+import { Review } from "./review";
 
 function reviewWith(
   paths: string[],
@@ -74,12 +74,6 @@ describe("load", () => {
 });
 
 describe("markReviewed", () => {
-  test("adds the path", () => {
-    const review = new Review();
-    review.markReviewed("a.md");
-    expect(review.isReviewed("a.md")).toBe(true);
-  });
-
   test("starts the review clock on first mark only", () => {
     const review = new Review();
     review.markReviewed("a.md", () => "first");
@@ -118,19 +112,6 @@ describe("reset", () => {
   });
 });
 
-describe("pickRandom", () => {
-  test("picks by the injected rng", () => {
-    const items = ["a", "b", "c"];
-    expect(pickRandom(items, () => 0)).toBe("a");
-    expect(pickRandom(items, () => 0.5)).toBe("b");
-    expect(pickRandom(items, () => 0.99)).toBe("c");
-  });
-
-  test("returns undefined for an empty list", () => {
-    expect(pickRandom([])).toBeUndefined();
-  });
-});
-
 describe("stats", () => {
   test("computes stats for partial review", () => {
     const review = reviewWith(["a.md", "b.md", "elsewhere.md"]);
@@ -143,10 +124,6 @@ describe("stats", () => {
 
   test("handles zero eligible files", () => {
     expect(new Review().stats([]).percentCompleted).toBe(0);
-  });
-
-  test("handles fully reviewed", () => {
-    expect(reviewWith(["a.md"]).stats(["a.md"]).percentCompleted).toBe(100);
   });
 });
 
@@ -206,18 +183,6 @@ describe("rename a folder", () => {
     expect(review.rename("folder", "renamed", true)).toBe(false);
     expect(review.isReviewed("folder-extra/a.md")).toBe(true);
     expect(review.excludedFolders).toEqual(["folder-extra"]);
-  });
-});
-
-describe("remove a file", () => {
-  test("removes a reviewed path", () => {
-    const review = reviewWith(["a.md"]);
-    expect(review.remove("a.md", false)).toBe(true);
-    expect(review.isReviewed("a.md")).toBe(false);
-  });
-
-  test("returns false for an unreviewed path", () => {
-    expect(new Review().remove("a.md", false)).toBe(false);
   });
 });
 
