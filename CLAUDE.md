@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Obsidian plugin to randomly review vault notes and track progress. Bun-only toolchain: Bun runs the tests, bundles `src/main.ts` into the committed `main.js` (`build.ts`), and copies the build into a vault (`deploy.ts`).
+Obsidian plugin to randomly review vault notes and track progress. Bun-only toolchain: Bun runs the tests, bundles `src/main.ts` into the committed `main.js` (`bun build`, invoked from `package.json`), and copies the build into a vault (`deploy.ts`).
 
 The current next step for this repo is tracked in the workspace backlog at `../NEXT.md` (the `obsidian-review` row). Read it when starting work; update it when that step ships.
 
