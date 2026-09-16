@@ -1,4 +1,4 @@
-import type ReviewPlugin from "./plugin";
+import type ReviewPlugin from "./main";
 
 /**
  * "Which review actions apply to the file I am looking at" is one domain rule.

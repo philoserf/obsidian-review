@@ -1,6 +1,6 @@
 import { type App, Modal, Setting, SuggestModal } from "obsidian";
 import { availableCommands, type ReviewCommand } from "./commands";
-import type ReviewPlugin from "./plugin";
+import type ReviewPlugin from "./main";
 
 export class ConfirmResetModal extends Modal {
   private confirmed = false;

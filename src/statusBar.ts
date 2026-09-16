@@ -1,6 +1,6 @@
 import { Menu } from "obsidian";
 import { COMMANDS } from "./commands";
-import type ReviewPlugin from "./plugin";
+import type ReviewPlugin from "./main";
 
 export class StatusBar {
   private element: HTMLElement;
