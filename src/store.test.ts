@@ -3,7 +3,9 @@ import {
   CURRENT_SCHEMA_VERSION,
   markReviewed,
   type PluginData,
+  renamePath,
   reset,
+  setShowStatusBar,
 } from "./review";
 import { Store, type StoreDeps } from "./store";
 
@@ -144,19 +146,17 @@ describe("commit", () => {
 });
 
 describe("the write queue", () => {
-  test("overlapping saves land in call order", async () => {
+  test("overlapping commits write in call order", async () => {
     const h = harness({ manualWrites: true });
     await h.store.reload();
 
-    h.store.setState(markReviewed(h.store.state, "a.md"));
-    const first = h.store.save();
-    h.store.setState(markReviewed(h.store.state, "b.md"));
-    const second = h.store.save();
+    const first = h.store.commit((st) => markReviewed(st, "a.md"));
+    const second = h.store.commit((st) => markReviewed(st, "b.md"));
 
     await h.settle(true);
-    await first;
+    expect(await first).toBe(true);
     await h.settle(true);
-    await second;
+    expect(await second).toBe(true);
 
     expect(h.writes.map((w) => w.reviewedPaths)).toEqual([
       ["a.md"],
@@ -164,48 +164,33 @@ describe("the write queue", () => {
     ]);
   });
 
+  // A failed predecessor must not stop its successor: the queue tail swallows
+  // the rejection so the next caller still runs.
   test("a failed write does not stop its successor", async () => {
     const h = harness({ manualWrites: true });
     await h.store.reload();
 
-    h.store.setState(markReviewed(h.store.state, "a.md"));
-    const first = h.store.save();
-    h.store.setState(markReviewed(h.store.state, "b.md"));
-    const second = h.store.save();
+    const first = h.store.commit((st) => markReviewed(st, "a.md"));
+    const second = h.store.commit((st) => markReviewed(st, "b.md"));
 
     await h.settle(false);
-    await expect(first).rejects.toThrow();
+    expect(await first).toBe(false);
     await h.settle(true);
-    await second;
+    expect(await second).toBe(true);
 
     expect(h.writes).toHaveLength(2);
-  });
-
-  // Each queued write carries the state that was current when it was
-  // requested, not whatever the store holds by the time its turn comes.
-  test("a queued write carries its own snapshot", async () => {
-    const h = harness({ manualWrites: true });
-    await h.store.reload();
-
-    h.store.setState(markReviewed(h.store.state, "a.md"));
-    const first = h.store.save();
-
-    // Change the state while the first write is still in flight.
-    h.store.setState(markReviewed(h.store.state, "b.md"));
-
-    await h.settle(true);
-    await first;
-
-    expect(h.writes[0].reviewedPaths).toEqual(["a.md"]);
+    // The failed commit was never adopted, so the successor built on the
+    // state that was actually persisted.
+    expect([...h.store.state.reviewedPaths]).toEqual(["b.md"]);
   });
 });
 
-describe("save", () => {
-  test("a fenced store writes nothing and resolves", async () => {
+describe("a fenced store", () => {
+  test("writes nothing and reports false", async () => {
     const h = harness({ loadThrows: true });
     await h.store.reload();
 
-    await h.store.save();
+    expect(await h.store.commit((st) => markReviewed(st, "a.md"))).toBe(false);
     expect(h.writes).toHaveLength(0);
   });
 });
@@ -278,10 +263,10 @@ describe("commit-after-write", () => {
     const h = harness({ manualWrites: true });
     await h.store.reload();
 
-    h.store.setState(markReviewed(h.store.state, "a.md"));
-
     const order: string[] = [];
-    const write = h.store.save().then(() => order.push("write"));
+    const write = h.store
+      .commit((st) => markReviewed(st, "a.md"))
+      .then(() => order.push("write"));
     const reload = h.store.reload().then(() => order.push("reload"));
 
     await h.settle(true);
@@ -290,5 +275,33 @@ describe("commit-after-write", () => {
     // Before this fix the reload resolved first and the queued write then
     // overwrote the state it had just adopted from disk.
     expect(order).toEqual(["write", "reload"]);
+  });
+});
+
+describe("#115 — every writer goes through the same door", () => {
+  // The status-bar toggle used to write the preference straight into state and
+  // then call a save that refused: the switch flipped, the bar hid, nothing was
+  // written, and the next reload silently put it back.
+  test("a fenced store refuses a preference change too", async () => {
+    const h = harness({ loadThrows: true });
+    await h.store.reload();
+
+    expect(h.store.state.showStatusBar).toBe(true);
+    expect(await h.store.commit((s) => setShowStatusBar(s, false))).toBe(false);
+    expect(h.store.state.showStatusBar).toBe(true);
+    expect(h.writes).toHaveLength(0);
+  });
+
+  // Vault reconciliation is not exempt: a rename that cannot be persisted must
+  // not be applied in memory either, or a blocked session shows exclusions the
+  // next reload contradicts.
+  test("a fenced store refuses vault reconciliation", async () => {
+    const h = harness({ loadThrows: true });
+    await h.store.reload();
+
+    expect(
+      await h.store.commit((s) => renamePath(s, "Templates", "Meta", true)),
+    ).toBe(false);
+    expect(h.writes).toHaveLength(0);
   });
 });

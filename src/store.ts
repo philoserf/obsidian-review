@@ -45,11 +45,6 @@ export class Store {
     return this.blocked !== null;
   }
 
-  /** Settles when every write queued so far has finished, however it finished. */
-  get settled(): Promise<void> {
-    return this.pending;
-  }
-
   private readFromDisk = async (): Promise<void> => {
     let raw: unknown = null;
     let loadFailed = false;
@@ -158,36 +153,4 @@ export class Store {
       this.deps.onChange?.();
       return true;
     });
-
-  save = (): Promise<void> => {
-    if (this.blocked) {
-      this.deps.warn(`not saving: ${this.blocked}`);
-      this.deps.notify(
-        `Review: ${this.blocked}. Changes will not be saved until you reload.`,
-      );
-      return Promise.resolve();
-    }
-
-    // Snapshot at call time, not write time: a queued write must carry the
-    // state that was current when it was requested, not whatever `state` holds
-    // by the time its turn comes.
-    const payload = serialize(this.state);
-
-    return this.enqueue(() =>
-      this.deps.save(payload).catch((err) => {
-        this.deps.log(
-          `saveData failed (${payload.reviewedPaths.length} reviewed paths, ${payload.excludedFolders.length} excluded folders)`,
-          err,
-        );
-        throw err;
-      }),
-    );
-  };
-
-  /** Replace the state without persisting. Used by the vault reconcilers. */
-  setState = (state: PluginState): void => {
-    if (state === this.state) return;
-    this.state = state;
-    this.deps.onChange?.();
-  };
 }

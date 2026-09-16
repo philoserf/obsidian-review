@@ -17,6 +17,7 @@ import {
   renamePath,
   reset,
   setExcludedFolders,
+  setShowStatusBar,
   stats,
 } from "./review";
 import { ReviewSettingTab } from "./settingsTab";
@@ -25,6 +26,7 @@ import { Store } from "./store";
 
 export default class ReviewPlugin extends Plugin {
   statusBar!: StatusBar;
+  private settingsTab?: ReviewSettingTab;
 
   /**
    * Owns the persisted document, the write fence and the write queue. It takes
@@ -104,7 +106,8 @@ export default class ReviewPlugin extends Plugin {
       callback: () => this.openReviewMenu(),
     });
 
-    this.addSettingTab(new ReviewSettingTab(this.app, this));
+    this.settingsTab = new ReviewSettingTab(this.app, this);
+    this.addSettingTab(this.settingsTab);
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) =>
@@ -129,15 +132,12 @@ export default class ReviewPlugin extends Plugin {
 
   loadSettings = () => this.store.reload();
 
-  saveSettings = () => this.store.save();
-
   onExternalSettingsChange = async () => {
-    // Settle any in-flight write first. Queued writes carry a snapshot taken at
-    // call time, so one that lands after this reload would overwrite the very
-    // state we are adopting from disk.
-
+    // reload() joins the write queue, so a save requested before this lands
+    // before it rather than on top of the state it just adopted.
     await this.loadSettings();
     this.statusBar.update();
+    this.settingsTab?.invalidate();
   };
 
   getActiveMarkdownFile = (): TFile | null => {
@@ -227,6 +227,10 @@ export default class ReviewPlugin extends Plugin {
     return this.commit((s) => setExcludedFolders(s, list));
   };
 
+  setShowStatusBar = (value: boolean): Promise<boolean> => {
+    return this.commit((s) => setShowStatusBar(s, value));
+  };
+
   resetReview = async (): Promise<boolean> => {
     if (!(await this.confirmReset())) return false;
 
@@ -242,24 +246,19 @@ export default class ReviewPlugin extends Plugin {
 
   // The `instanceof` stays on this side of the boundary so `Review` needs no
   // Obsidian import and stays directly testable.
+  // Through commit like every other writer: a reconciliation that cannot be
+  // persisted must not be applied in memory either, or a blocked session
+  // reports exclusions the next reload will contradict. commit writes nothing
+  // when the transition changes nothing, so no guard is needed here.
   private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
-    const next = renamePath(
-      this.state,
-      oldPath,
-      file.path,
-      file instanceof TFolder,
+    await this.commit((s) =>
+      renamePath(s, oldPath, file.path, file instanceof TFolder),
     );
-    if (next !== this.state) {
-      this.store.setState(next);
-      await this.saveSettings();
-    }
+    this.settingsTab?.invalidate();
   };
 
   private handleFileDelete = async (file: TAbstractFile) => {
-    const next = removePath(this.state, file.path, file instanceof TFolder);
-    if (next !== this.state) {
-      this.store.setState(next);
-      await this.saveSettings();
-    }
+    await this.commit((s) => removePath(s, file.path, file instanceof TFolder));
+    this.settingsTab?.invalidate();
   };
 }
