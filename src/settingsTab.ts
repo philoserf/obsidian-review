@@ -1,6 +1,6 @@
 import { type App, debounce, PluginSettingTab, Setting } from "obsidian";
 import { FolderSuggest } from "./folderSuggest";
-import type ReviewPlugin from "./plugin";
+import type ReviewPlugin from "./main";
 
 export class ReviewSettingTab extends PluginSettingTab {
   plugin: ReviewPlugin;
