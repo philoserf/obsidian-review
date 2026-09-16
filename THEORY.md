@@ -335,15 +335,16 @@ what the settings tab does when a rename arrives mid-edit are traced, not observ
 
 ## Index
 
-| #   | Severity | Issue                                                                    | Primary location                |
-| --- | -------- | ------------------------------------------------------------------------ | ------------------------------- |
-| 1   | medium   | `Store.state` is publicly assignable, so the one-door rule is convention | `src/store.ts` — `state`        |
-| 2   | low      | The preference-versus-review-domain distinction has no representation    | `src/review.ts` — `PluginState` |
+| #                                                              | Severity | Issue                                                                    | Primary location                |
+| -------------------------------------------------------------- | -------- | ------------------------------------------------------------------------ | ------------------------------- |
+| [166](https://github.com/philoserf/obsidian-review/issues/166) | medium   | `Store.state` is publicly assignable, so the one-door rule is convention | `src/store.ts` — `state`        |
+| [167](https://github.com/philoserf/obsidian-review/issues/167) | low      | The preference-versus-review-domain distinction has no representation    | `src/review.ts` — `PluginState` |
 
 **Total: 2 issues (0 critical, 0 high, 1 medium, 1 low)**
 
 Three further findings on this code were filed by the walkthrough pass that ran alongside this
-one: a `commit` docstring that still describes the removed rollback, a comment citing a
-`Review` class that no longer exists, and `Store.isBlocked` having no production caller. They
+one: a `commit` docstring that still describes the removed rollback ([#163](https://github.com/philoserf/obsidian-review/issues/163)), a
+comment citing a `Review` class that no longer exists ([#164](https://github.com/philoserf/obsidian-review/issues/164)), and `Store.isBlocked`
+having no production caller ([#165](https://github.com/philoserf/obsidian-review/issues/165)). They
 are not counted here, but the first is the one this document refers to above when it warns
 against reintroducing a rollback — the comment currently argues for it.
