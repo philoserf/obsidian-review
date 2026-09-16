@@ -135,7 +135,6 @@ export default class ReviewPlugin extends Plugin {
     // Settle any in-flight write first. Queued writes carry a snapshot taken at
     // call time, so one that lands after this reload would overwrite the very
     // state we are adopting from disk.
-    await this.store.settled;
 
     await this.loadSettings();
     this.statusBar.update();
@@ -206,14 +205,14 @@ export default class ReviewPlugin extends Plugin {
    * must not show progress that is not on disk: a refused write is declined
    * before anything changes, and a failed one is rolled back.
    */
-  private mutate = (apply: (state: PluginState) => PluginState) =>
-    this.store.mutate(apply);
+  private commit = (apply: (state: PluginState) => PluginState) =>
+    this.store.commit(apply);
 
   markReviewed = async ({ openNext = false }: { openNext?: boolean } = {}) => {
     const file = this.getActiveMarkdownFile();
     if (!file) return;
 
-    const saved = await this.mutate((s) => markReviewed(s, file.path));
+    const saved = await this.commit((s) => markReviewed(s, file.path));
     if (saved && openNext) await this.openRandomFile();
   };
 
@@ -221,17 +220,17 @@ export default class ReviewPlugin extends Plugin {
     const file = this.getActiveMarkdownFile();
     if (!file) return;
 
-    await this.mutate((s) => markUnreviewed(s, file.path));
+    await this.commit((s) => markUnreviewed(s, file.path));
   };
 
   setExcludedFolders = async (list: string[]): Promise<boolean> => {
-    return this.mutate((s) => setExcludedFolders(s, list));
+    return this.commit((s) => setExcludedFolders(s, list));
   };
 
   resetReview = async (): Promise<boolean> => {
     if (!(await this.confirmReset())) return false;
 
-    return this.mutate((s) => reset(s));
+    return this.commit((s) => reset(s));
   };
 
   private confirmReset = (): Promise<boolean> => {
