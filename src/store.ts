@@ -11,8 +11,8 @@ import {
  * Everything the store needs from the outside world, as plain functions. The
  * plugin binds these to Obsidian (`loadData`, `saveData`, `Notice`, `console`);
  * a test binds them to whatever it wants to observe or make fail. That is the
- * point: the write fence, the queue and the rollback are the plugin's densest
- * code and were the only part of it no test could reach.
+ * point: the write fence and the write queue are the plugin's densest code and
+ * were the only part of it no test could reach.
  */
 export type StoreDeps = {
   load: () => Promise<unknown>;
@@ -53,7 +53,14 @@ export class Store {
 
   constructor(private deps: StoreDeps) {}
 
-  /** True when writes are currently refused. */
+  /**
+   * True when writes are currently refused. Read only by `store.test.ts`, which
+   * is the whole of its job: it is the seam the fence assertions go through —
+   * that a failed read raises it, that a reload lifts it again, that a newer
+   * schema version raises it. Nothing in the plugin consults it, deliberately.
+   * A settings tab that showed a read-only session before the user tried to
+   * write would be the caller that changes that; see #173.
+   */
   get isBlocked(): boolean {
     return this.blocked !== null;
   }

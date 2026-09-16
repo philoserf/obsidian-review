@@ -82,7 +82,8 @@ commit(apply):
 Nothing is applied speculatively, so **there is nothing to roll back.** The snapshot, the
 restore, and the drain-before-apply did not get fixed; they stopped being necessary. If you
 find yourself reintroducing a rollback, stop — you are rebuilding the design those four bugs
-came out of, and a comment in `main.ts` still recommends it (see the index).
+came out of. The `commit` docstring in `main.ts` used to recommend exactly that, and now says
+the opposite.
 
 Three consequences you must not "simplify" away:
 
@@ -349,8 +350,6 @@ review fields from the preference that shares their file.
 **Total: 0 issues**
 
 Three further findings on this code were filed by the walkthrough pass that ran alongside this
-one: a `commit` docstring that still describes the removed rollback ([#163](https://github.com/philoserf/obsidian-review/issues/163)), a
-comment citing a `Review` class that no longer exists ([#164](https://github.com/philoserf/obsidian-review/issues/164)), and `Store.isBlocked`
-having no production caller ([#165](https://github.com/philoserf/obsidian-review/issues/165)). They
-are not counted here, but the first is the one this document refers to above when it warns
-against reintroducing a rollback — the comment currently argues for it.
+one — [#163](https://github.com/philoserf/obsidian-review/issues/163),
+[#164](https://github.com/philoserf/obsidian-review/issues/164) and
+[#165](https://github.com/philoserf/obsidian-review/issues/165) — and are closed too.
