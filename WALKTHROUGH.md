@@ -101,19 +101,29 @@ export type PluginData = {
   showStatusBar: boolean;
 };
 
-export type PluginState = {
-  readonly schemaVersion: number;
+type ReviewState = {
   readonly reviewedPaths: ReadonlySet<string>;
   readonly reviewStartedAt?: string;
   readonly excludedFolders: readonly string[];
+};
+
+export type PluginState = ReviewState & {
+  readonly schemaVersion: number;
   readonly showStatusBar: boolean;
 };
 ```
 
-Five fields, and the split between them is not arbitrary. `reviewedPaths` is membership-tested
+Five fields, and neither split between them is arbitrary. `reviewedPaths` is membership-tested
 on every eligibility check, so in memory it is a `Set`; on disk it has to be an array. Every
 field is `readonly`, because the document is replaced rather than modified — the property the
 whole save path depends on.
+
+The second split is the intersection. Three of the five fields are the review; one is a UI
+preference and one is a file-format detail, and they are here because they share the file, not
+because they are the same kind of thing. Keeping `ReviewState` nameable is what tells the next
+maintainer which side a sixth field belongs on, and it is what `reset` is written against — it
+clears the progress and leaves both the scope and the preference alone. The intersection is
+still a flat object, so `data.json` is unchanged by it.
 
 ### Validation, and why it coerces instead of throwing
 
