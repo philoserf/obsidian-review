@@ -71,7 +71,7 @@ describe("reload", () => {
     const h = harness({ initial: { reviewedPaths: ["a.md"] } });
     await h.store.reload();
     expect([...h.store.state.reviewedPaths]).toEqual(["a.md"]);
-    expect(h.store.isBlocked).toBe(false);
+    expect(h.store.blocked).toBeNull();
   });
 
   // The fence exists for this user: a read that failed must not be overwritten
@@ -79,7 +79,7 @@ describe("reload", () => {
   test("a load that throws sets the fence and notifies", async () => {
     const h = harness({ loadThrows: true });
     await h.store.reload();
-    expect(h.store.isBlocked).toBe(true);
+    expect(h.store.blocked).toContain("could not be read");
     expect(h.notices[0]).toContain("could not read saved data");
   });
 
@@ -91,6 +91,23 @@ describe("reload", () => {
     expect(await h.store.commit((s) => markReviewed(s, "a.md"))).toBe(false);
     expect(h.store.state).toBe(before);
     expect(h.writes).toHaveLength(0);
+  });
+
+  // The two fences have different remedies, and the refusal used to tell
+  // everyone to reload — which does nothing for a user whose file was written
+  // by a newer version. The message the store hands out is the one the settings
+  // tab renders, so a wrong remedy would be wrong in two places.
+  test("a refusal names the remedy for the fence that refused it", async () => {
+    const unreadable = harness({ loadThrows: true });
+    await unreadable.store.reload();
+    await unreadable.store.commit((s) => markReviewed(s, "a.md"));
+    expect(unreadable.notices.at(-1)).toContain("Obsidian reloads it");
+
+    const newer = harness({ initial: { schemaVersion: 99 } });
+    await newer.store.reload();
+    await newer.store.commit((s) => markReviewed(s, "a.md"));
+    expect(newer.notices.at(-1)).toContain("until the plugin is updated");
+    expect(newer.notices.at(-1)).not.toContain("reload");
   });
 
   test("a second reload lifts a fence set by a transient read failure", async () => {
@@ -108,11 +125,11 @@ describe("reload", () => {
     });
 
     await store.reload();
-    expect(store.isBlocked).toBe(true);
+    expect(store.blocked).not.toBeNull();
 
     fail = false;
     await store.reload();
-    expect(store.isBlocked).toBe(false);
+    expect(store.blocked).toBeNull();
     expect(await store.commit((s) => markReviewed(s, "a.md"))).toBe(true);
     expect(writes).toHaveLength(1);
   });
@@ -122,7 +139,7 @@ describe("reload", () => {
       initial: { schemaVersion: 99, reviewedPaths: ["a.md"] },
     });
     await h.store.reload();
-    expect(h.store.isBlocked).toBe(true);
+    expect(h.store.blocked).toContain("newer plugin version");
     expect(h.store.state.schemaVersion).toBe(99);
     expect(h.notices[0]).toContain("newer plugin version");
   });
@@ -135,7 +152,7 @@ describe("reload", () => {
       initial: { schemaVersion: "99", reviewedPaths: ["a.md"] },
     });
     await h.store.reload();
-    expect(h.store.isBlocked).toBe(true);
+    expect(h.store.blocked).toContain("newer plugin version");
     expect(h.store.state.schemaVersion).toBe(99);
   });
 

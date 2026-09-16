@@ -55,6 +55,19 @@ export class ReviewSettingTab extends PluginSettingTab {
     }
     const drafts = this.drafts;
 
+    // Before anything the user might edit, not after they try: the fence exists
+    // to protect a review that cannot be reconstructed, and a Notice that
+    // arrives once they have already changed something tells them too late to
+    // have chosen otherwise. The store's message carries its own remedy,
+    // because reloading fixes one fence and not the other.
+    const blocked = this.plugin.store.blocked;
+    if (blocked) {
+      containerEl.createDiv("review-blocked", (div) => {
+        div.createEl("strong").setText("Changes are not being saved");
+        div.createEl("p").setText(blocked);
+      });
+    }
+
     const reviewSetting = new Setting(containerEl)
       .setName("Review")
       .setDesc(

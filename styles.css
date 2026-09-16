@@ -16,3 +16,27 @@
 .review-excluded-folder .setting-item-info {
   display: none;
 }
+
+/*
+ * A tint rather than a fill. `--background-modifier-error-hover` is a saturated
+ * red meant for a button's hover state, and it renders `--text-error` invisible
+ * on top of it — checked in a vault, not guessed.
+ */
+.review-blocked {
+  margin-bottom: var(--size-4-4);
+  padding: var(--size-4-3);
+  border: 1px solid rgba(var(--color-red-rgb), 0.4);
+  border-radius: var(--radius-m);
+  background-color: rgba(var(--color-red-rgb), 0.1);
+}
+
+.review-blocked strong {
+  display: block;
+  margin-bottom: var(--size-2-2);
+  color: var(--text-error);
+}
+
+.review-blocked p {
+  margin: 0;
+  color: var(--text-normal);
+}
