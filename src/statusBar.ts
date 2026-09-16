@@ -23,7 +23,7 @@ export class StatusBar {
       return;
     }
 
-    this.setIsVisible(this.plugin.data.showStatusBar);
+    this.setIsVisible(this.plugin.showStatusBar);
 
     this.element.setText(status === "reviewed" ? "Reviewed" : "Not reviewed");
   };
