@@ -12,7 +12,15 @@ import { ReviewSettingTab } from "./settingsTab";
 import { StatusBar } from "./statusBar";
 
 export default class ReviewPlugin extends Plugin {
-  data!: PluginData;
+  /**
+   * The two persisted fields `Review` does not own. Everything else in
+   * `PluginData` lives in `review` and is serialized from it at save time —
+   * keeping a second copy here is what made a rolled-back write leave the
+   * settings tab reporting a review that was never discarded.
+   */
+  schemaVersion = CURRENT_SCHEMA_VERSION;
+  showStatusBar = true;
+
   readonly review = new Review();
   statusBar!: StatusBar;
 
@@ -138,12 +146,10 @@ export default class ReviewPlugin extends Plugin {
       );
     }
 
-    this.data = {
-      ...normalized,
-      // Keep a newer version's number, so the file is not truncated to v2
-      // if something later lifts the write block.
-      schemaVersion: isNewer ? savedVersion : CURRENT_SCHEMA_VERSION,
-    };
+    // Keep a newer version's number, so the file is not truncated to v2
+    // if something later lifts the write block.
+    this.schemaVersion = isNewer ? savedVersion : CURRENT_SCHEMA_VERSION;
+    this.showStatusBar = normalized.showStatusBar;
 
     // Assigned on every path, back to null included, so a reload after a
     // transient read failure lifts the block.
@@ -156,9 +162,9 @@ export default class ReviewPlugin extends Plugin {
     }
 
     this.review.load(
-      this.data.reviewedPaths,
-      this.data.excludedFolders,
-      this.data.reviewStartedAt,
+      normalized.reviewedPaths,
+      normalized.excludedFolders,
+      normalized.reviewStartedAt,
     );
   };
 
@@ -171,17 +177,15 @@ export default class ReviewPlugin extends Plugin {
       return Promise.resolve();
     }
 
-    this.data.reviewedPaths = [...this.review.reviewedPaths];
-    this.data.excludedFolders = [...this.review.excludedFolders];
-    this.data.reviewStartedAt = this.review.reviewStartedAt;
-
     // Snapshot at call time, not write time: a queued write must carry the
-    // state that was current when it was requested, not whatever `this.data`
+    // state that was current when it was requested, not whatever `review`
     // holds by the time its turn comes.
     const payload: PluginData = {
-      ...this.data,
-      reviewedPaths: [...this.data.reviewedPaths],
-      excludedFolders: [...this.data.excludedFolders],
+      schemaVersion: this.schemaVersion,
+      showStatusBar: this.showStatusBar,
+      reviewedPaths: [...this.review.reviewedPaths],
+      excludedFolders: [...this.review.excludedFolders],
+      reviewStartedAt: this.review.reviewStartedAt,
     };
 
     // Serialize, so overlapping saves land in call order. Both arms run the

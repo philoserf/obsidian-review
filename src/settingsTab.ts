@@ -45,8 +45,8 @@ export class ReviewSettingTab extends PluginSettingTab {
     const reviewSetting = new Setting(containerEl)
       .setName("Review")
       .setDesc(
-        this.plugin.data.reviewStartedAt
-          ? `Review started on ${new Date(this.plugin.data.reviewStartedAt).toLocaleDateString()}.`
+        this.plugin.review.reviewStartedAt
+          ? `Review started on ${new Date(this.plugin.review.reviewStartedAt).toLocaleDateString()}.`
           : "No active review.",
       );
     reviewSetting.addButton((btn) => {
@@ -117,9 +117,9 @@ export class ReviewSettingTab extends PluginSettingTab {
       .setName("Status bar")
       .setDesc("Show file review status in the status bar.")
       .addToggle((toggle) => {
-        toggle.setValue(this.plugin.data.showStatusBar);
+        toggle.setValue(this.plugin.showStatusBar);
         toggle.onChange((value) => {
-          this.plugin.data.showStatusBar = value;
+          this.plugin.showStatusBar = value;
           this.plugin.statusBar.update();
           this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
         });

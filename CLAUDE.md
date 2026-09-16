@@ -33,7 +33,7 @@ Keep `review.ts` and `data.ts` import-free — there is no Obsidian mock, and ad
 
 ### Data model
 
-The plugin persists only the set of reviewed file paths, excluded folders, a start timestamp, and the status-bar toggle (Obsidian's `loadData`/`saveData` into `data.json`). The reviewed paths and excluded folders belong to `Review`, their single owner — the vault is the source of truth for what exists, so `Review.rename`/`remove` reconcile _both_ stored sets against current vault state rather than maintaining an authoritative file list.
+The plugin persists only the set of reviewed file paths, excluded folders, a start timestamp, and the status-bar toggle (Obsidian's `loadData`/`saveData` into `data.json`). `Review` owns the reviewed paths, excluded folders and start timestamp, and is the only copy of them; the plugin holds just the two persisted fields `Review` does not own, `schemaVersion` and `showStatusBar`, and `saveSettings` serializes a payload from both at call time. The vault is the source of truth for what exists, so `Review.rename`/`remove` reconcile _both_ stored sets against current vault state rather than maintaining an authoritative file list.
 
 `normalizeFolders` in `review.ts` is the only way to write excluded folders. It trims, strips trailing slashes, drops empties, and dedupes — a folder stored unnormalized matches nothing, silently, because `isEligible` tests for a `${folder}/` prefix. All three writers go through it: `setExcludedFolders` (the UI), `load` (the disk), and `renameFolder` (vault reconciliation, which maps entries independently and can collide two onto one).
 
