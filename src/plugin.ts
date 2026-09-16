@@ -327,12 +327,8 @@ export default class ReviewPlugin extends Plugin {
     return this.mutate(() => this.review.setExcludedFolders(list));
   };
 
-  resetReview = async ({
-    confirm = true,
-  }: {
-    confirm?: boolean;
-  } = {}): Promise<boolean> => {
-    if (confirm && !(await this.confirmReset())) return false;
+  resetReview = async (): Promise<boolean> => {
+    if (!(await this.confirmReset())) return false;
 
     return this.mutate(() => this.review.reset());
   };
