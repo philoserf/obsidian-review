@@ -27,24 +27,26 @@ bun run deploy                  # build, then copy main.js/manifest.json/styles.
 
 ### The boundary
 
-`src/review.ts` (`Review`) and `src/data.ts` (persisted shape) import nothing from Obsidian and hold all the logic worth testing. Everything Obsidian-facing lives in `src/plugin.ts` and the UI modules it owns (`statusBar.ts`, `settingsTab.ts`, `modals.ts`, `folderSuggest.ts`). `src/main.ts` is a two-line re-export because Obsidian requires that entrypoint name.
+`src/review.ts` (the persisted shape, its validation, and the pure transitions over it) and `src/store.ts` (the state, the write fence and the write queue) import nothing from Obsidian and hold all the logic worth testing. Everything Obsidian-facing lives in `src/plugin.ts` and the UI modules it owns (`statusBar.ts`, `settingsTab.ts`, `modals.ts`, `folderSuggest.ts`). `src/main.ts` is a two-line re-export because Obsidian requires that entrypoint name.
 
-Keep `review.ts` and `data.ts` import-free — there is no Obsidian mock, and adding one would mean the boundary has leaked. The file-vs-folder distinction crosses as a boolean, so `instanceof TFolder` stays in `plugin.ts`.
+Keep `review.ts` and `store.ts` import-free — there is no Obsidian mock, and adding one would mean the boundary has leaked. The file-vs-folder distinction crosses as a boolean, so `instanceof TFolder` stays in `plugin.ts`.
 
 ### Data model
 
-The plugin persists only the set of reviewed file paths, excluded folders, a start timestamp, and the status-bar toggle (Obsidian's `loadData`/`saveData` into `data.json`). `Review` owns the reviewed paths, excluded folders and start timestamp, and is the only copy of them; the plugin holds just the two persisted fields `Review` does not own, `schemaVersion` and `showStatusBar`, and `saveSettings` serializes a payload from both at call time. The vault is the source of truth for what exists, so `Review.rename`/`remove` reconcile _both_ stored sets against current vault state rather than maintaining an authoritative file list.
+The plugin persists only the set of reviewed file paths, excluded folders, a start timestamp, and the status-bar toggle (Obsidian's `loadData`/`saveData` into `data.json`). All five fields live in one immutable `PluginState` owned by `Store` — there is exactly one copy, replaced rather than modified, and `serialize` turns it into the JSON shape at write time. The vault is the source of truth for what exists, so `renamePath`/`removePath` reconcile _both_ stored sets against current vault state rather than maintaining an authoritative file list.
 
-`normalizeFolders` in `review.ts` is the only way to write excluded folders. It trims, strips trailing slashes, drops empties, and dedupes — a folder stored unnormalized matches nothing, silently, because `isEligible` tests for a `${folder}/` prefix. All three writers go through it: `setExcludedFolders` (the UI), `load` (the disk), and `renameFolder` (vault reconciliation, which maps entries independently and can collide two onto one).
+`normalizeFolders` in `review.ts` is the only way to write excluded folders. It trims, strips trailing slashes, drops empties, and dedupes — a folder stored unnormalized matches nothing, silently, because `isEligible` tests for a `${folder}/` prefix. All three writers go through it: `setExcludedFolders` (the UI), `normalizeState` (the disk), and `renamePath` (vault reconciliation, which maps entries independently and can collide two onto one).
 
-### Persistence safety rails (`plugin.ts`)
+### Persistence safety rails (`store.ts`)
 
-Four invariants that are easy to break by "simplifying" the save path:
+`Store` owns the persisted document, the write fence and the write queue. It takes `load`/`save`/`notify`/`log`/`warn`/`onChange` as plain functions, which is what makes the save path — the plugin's densest code — reachable from `store.test.ts`. Four invariants that are easy to break by "simplifying" it:
 
-- **`saveBlocked`** — writes are refused when `loadData` threw, or when `data.json` carries a `schemaVersion` newer than `CURRENT_SCHEMA_VERSION`. It is reassigned on _every_ path through `loadSettings`, including back to `null`, so a reload lifts a transient block. A newer version's number is preserved rather than truncated to the current one.
-- **`normalizeData`** coerces every field to its default instead of throwing: bad `data.json` must still render the settings tab so the user can repair it.
-- **`saveSettings`** snapshots the payload at call time and chains onto `savePending`, so overlapping saves land in call order and a failed write does not stop its successor.
-- **`mutate`** awaits any in-flight write, applies the change, and rolls the whole `Review` back if the save fails. UI must never show progress that is not on disk. Route review-state changes through it, not through bare `saveSettings`.
+- **`blocked`** — writes are refused when `load` threw, or when `data.json` carries a `schemaVersion` newer than `CURRENT_SCHEMA_VERSION`. It is reassigned on _every_ path through `reload`, including back to `null`, so a reload lifts a transient block. A newer version's number is preserved rather than truncated to the current one.
+- **`normalizeState`** coerces every field to its default instead of throwing: bad `data.json` must still render the settings tab so the user can repair it.
+- **`enqueue`** serializes everything that touches state or disk — commits, bare saves, and reloads — in call order. A reload joining the same queue is what stops a pending write landing on top of state just adopted from disk.
+- **`commit(apply)`** runs the transition _inside_ the queued critical section and replaces the state only after the write resolves. So overlapping commits compose instead of racing, a refusal cannot slip in behind the fence check, and a failed write needs no rollback. It returns `false` for both a refusal and an I/O failure — the caller's question is "is this on disk?" and both answers are no. **Route state changes through it, not through bare `save()`.**
+
+Because state is adopted after the write, the status bar repaints after `saveData` resolves rather than optimistically. That is deliberate: the UI must not show progress that is not on disk.
 
 Fire-and-forget UI callbacks go through `plugin.runAsync(promise, label)` so rejections surface as a `Notice` instead of vanishing.
 
@@ -55,10 +57,10 @@ Use the `obsidian-gate` then `obsidian-ship` skills — do not tag by hand. Neve
 ## Gotchas
 
 - **`main.js` is committed and CI enforces it.** `.github/workflows/main.yml` runs `bun run build` then `git diff --exit-code main.js`. Any source change — or a dependency bump, or a Bun release that shifts bundler output — must be followed by a rebuild and a commit of `main.js`, or the PR fails. `bun run dev` writes an unminified, sourcemapped `main.js`, so run `bun run build` before committing.
-- **`bun run typecheck` does not cover the tests.** `tsconfig.json` excludes `src/**/*.test.ts`, so `tsc --noEmit` checks 8 of the 10 files in `src/`. It passes locally after `bun install` (verified: exit 0, no output) — a failure is a real failure, not an expected local artifact.
+- **`bun run typecheck` covers the tests too.** The `src/**/*.test.ts` exclusion was dropped when the store gained a test suite, so `tsc --noEmit` checks all of `src/`. It passes locally after `bun install` — a failure is a real failure, not an expected local artifact.
 - `bun run deploy` requires `OBSIDIAN_DEPLOY_DEST` (path to the plugin folder inside a vault). See `.env.local.example`; Bun auto-loads `.env.local`. It runs `build` first, so it will not copy a stale `main.js` — and it refuses to deploy at all when `check` fails, formatting drift included. Use `bun run dev` for a tight edit loop.
 - If issue descriptions (line numbers, function names, code structure) don't match the current codebase, stop and flag the discrepancy before proceeding with a fix.
 
 ## Testing
 
-`src/review.test.ts` and `src/data.test.ts` test the Obsidian-free modules directly; the clock is injectable (`markReviewed(path, now)`). Plugin integration (Obsidian API calls) is not unit-tested — verify it by deploying into a vault.
+`src/review.test.ts` and `src/store.test.ts` test the Obsidian-free modules directly; the clock is injectable (`markReviewed(path, now)`). Plugin integration (Obsidian API calls) is not unit-tested — verify it by deploying into a vault.

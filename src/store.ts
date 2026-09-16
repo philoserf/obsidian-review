@@ -50,7 +50,7 @@ export class Store {
     return this.pending;
   }
 
-  reload = async (): Promise<void> => {
+  private readFromDisk = async (): Promise<void> => {
     let raw: unknown = null;
     let loadFailed = false;
 
@@ -98,6 +98,67 @@ export class Store {
     }
   };
 
+  /**
+   * Everything that touches state or disk runs through here, in call order.
+   * One arm is enough: the `.catch` below means the tail never rejects, so a
+   * failed predecessor cannot stop its successor.
+   */
+  private enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = this.pending.then(fn);
+    this.pending = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  };
+
+  /**
+   * Adopt what is on disk. Joins the write queue, so a save requested before
+   * this reload lands before it rather than on top of it.
+   */
+  reload = (): Promise<void> => this.enqueue(this.readFromDisk);
+
+  /**
+   * Apply a transition and persist it. The transition runs *inside* the queued
+   * critical section and state is replaced only after the write resolves, so
+   * overlapping commits compose rather than racing, a refusal cannot slip in
+   * behind the fence check, and a failed write needs no rollback.
+   *
+   * Returns false for both a refusal and an I/O failure — the caller's question
+   * is "is this on disk?", and both answers are no. A transition that throws is
+   * a programming error and propagates.
+   */
+  commit = (apply: (state: PluginState) => PluginState): Promise<boolean> =>
+    this.enqueue(async () => {
+      if (this.blocked) {
+        this.deps.notify(
+          `Review: ${this.blocked}. Changes will not be saved until you reload.`,
+        );
+        return false;
+      }
+
+      const next = apply(this.state);
+      if (next === this.state) return true;
+
+      const payload = serialize(next);
+      try {
+        await this.deps.save(payload);
+      } catch (err) {
+        this.deps.log(
+          `saveData failed (${payload.reviewedPaths.length} reviewed paths, ${payload.excludedFolders.length} excluded folders)`,
+          err,
+        );
+        this.deps.notify(
+          "Review: could not save your review — see console for details.",
+        );
+        return false;
+      }
+
+      this.state = next;
+      this.deps.onChange?.();
+      return true;
+    });
+
   save = (): Promise<void> => {
     if (this.blocked) {
       this.deps.warn(`not saving: ${this.blocked}`);
@@ -112,10 +173,7 @@ export class Store {
     // by the time its turn comes.
     const payload = serialize(this.state);
 
-    // Serialize, so overlapping saves land in call order. One arm is enough:
-    // the `.catch` below means the tail never rejects, so a failed predecessor
-    // cannot stop its successor.
-    const next = this.pending.then(() =>
+    return this.enqueue(() =>
       this.deps.save(payload).catch((err) => {
         this.deps.log(
           `saveData failed (${payload.reviewedPaths.length} reviewed paths, ${payload.excludedFolders.length} excluded folders)`,
@@ -124,42 +182,6 @@ export class Store {
         throw err;
       }),
     );
-    this.pending = next.catch(() => {});
-    return next;
-  };
-
-  /**
-   * Apply a transition and persist it, rolling back if the write fails. The UI
-   * must not show progress that is not on disk, so a caller acts on the
-   * returned boolean rather than assuming the change stuck.
-   */
-  mutate = async (
-    apply: (state: PluginState) => PluginState,
-  ): Promise<boolean> => {
-    if (this.blocked) {
-      this.deps.notify(
-        `Review: ${this.blocked}. Changes will not be saved until you reload.`,
-      );
-      return false;
-    }
-
-    // Settle any in-flight write first, so a rollback cannot be overtaken by
-    // a save that was already queued from the state we are about to undo.
-    await this.pending;
-
-    const prev = this.state;
-
-    this.state = apply(prev);
-    this.deps.onChange?.();
-
-    try {
-      await this.save();
-      return true;
-    } catch (err) {
-      this.state = prev;
-      this.deps.onChange?.();
-      throw err;
-    }
   };
 
   /** Replace the state without persisting. Used by the vault reconcilers. */

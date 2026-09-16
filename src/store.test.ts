@@ -86,7 +86,7 @@ describe("reload", () => {
     await h.store.reload();
 
     const before = h.store.state;
-    expect(await h.store.mutate((s) => markReviewed(s, "a.md"))).toBe(false);
+    expect(await h.store.commit((s) => markReviewed(s, "a.md"))).toBe(false);
     expect(h.store.state).toBe(before);
     expect(h.writes).toHaveLength(0);
   });
@@ -111,7 +111,7 @@ describe("reload", () => {
     fail = false;
     await store.reload();
     expect(store.isBlocked).toBe(false);
-    expect(await store.mutate((s) => markReviewed(s, "a.md"))).toBe(true);
+    expect(await store.commit((s) => markReviewed(s, "a.md"))).toBe(true);
     expect(writes).toHaveLength(1);
   });
 
@@ -132,53 +132,14 @@ describe("reload", () => {
   });
 });
 
-describe("mutate", () => {
+describe("commit", () => {
   test("persists the change and reports true", async () => {
     const h = harness();
     await h.store.reload();
 
-    expect(await h.store.mutate((s) => markReviewed(s, "a.md"))).toBe(true);
+    expect(await h.store.commit((s) => markReviewed(s, "a.md"))).toBe(true);
     expect(h.writes).toHaveLength(1);
     expect(h.writes[0].reviewedPaths).toEqual(["a.md"]);
-  });
-
-  // The invariant: the UI must not show progress that is not on disk.
-  test("a save that throws rolls the state back", async () => {
-    const h = harness({ saveThrows: true });
-    await h.store.reload();
-
-    const before = h.store.state;
-    await expect(
-      h.store.mutate((s) => markReviewed(s, "a.md")),
-    ).rejects.toThrow("disk full");
-    expect(h.store.state).toBe(before);
-    expect(h.errors.some((e) => e.includes("saveData failed"))).toBe(true);
-  });
-
-  test("repaints on apply and again on rollback", async () => {
-    let repaints = 0;
-    const store = new Store({
-      load: async () => null,
-      save: async () => {
-        throw new Error("disk full");
-      },
-      notify: () => {},
-      log: () => {},
-      warn: () => {},
-      onChange: () => repaints++,
-    });
-    await store.reload();
-
-    await expect(
-      store.mutate((s) => markReviewed(s, "a.md")),
-    ).rejects.toThrow();
-    expect(repaints).toBe(2);
-  });
-
-  test("a transition that changes nothing still reports true", async () => {
-    const h = harness();
-    await h.store.reload();
-    expect(await h.store.mutate((s) => reset(s))).toBe(true);
   });
 });
 
@@ -246,5 +207,88 @@ describe("save", () => {
 
     await h.store.save();
     expect(h.writes).toHaveLength(0);
+  });
+});
+
+describe("commit-after-write", () => {
+  // #112: two mutate calls that overlap took the same rollback snapshot, so
+  // one failed write reverted the other's change in memory while the other's
+  // change landed on disk.
+  test("overlapping commits compose instead of racing", async () => {
+    const h = harness();
+    await h.store.reload();
+
+    const [a, b] = await Promise.all([
+      h.store.commit((s) => markReviewed(s, "a.md")),
+      h.store.commit((s) => markReviewed(s, "b.md")),
+    ]);
+
+    expect(a).toBe(true);
+    expect(b).toBe(true);
+    expect([...h.store.state.reviewedPaths].sort()).toEqual(["a.md", "b.md"]);
+    expect(h.writes.at(-1)?.reviewedPaths.sort()).toEqual(["a.md", "b.md"]);
+  });
+
+  // #119: nothing is applied speculatively, so a failed write needs no undo.
+  test("a failed write leaves the state untouched and reports false", async () => {
+    const h = harness({ saveThrows: true });
+    await h.store.reload();
+
+    const before = h.store.state;
+    expect(await h.store.commit((s) => markReviewed(s, "a.md"))).toBe(false);
+    expect(h.store.state).toBe(before);
+  });
+
+  // #116: a refusal arriving inside the critical section used to return true,
+  // because the fence was checked before the await and never re-checked.
+  test("a refused commit reports false rather than true", async () => {
+    const h = harness({ loadThrows: true });
+    await h.store.reload();
+
+    expect(await h.store.commit((s) => markReviewed(s, "a.md"))).toBe(false);
+    expect(h.writes).toHaveLength(0);
+  });
+
+  test("repaints once, after the write resolves", async () => {
+    const repaints: string[] = [];
+    const store = new Store({
+      load: async () => null,
+      save: async () => void repaints.push("write"),
+      notify: () => {},
+      log: () => {},
+      warn: () => {},
+      onChange: () => repaints.push("repaint"),
+    });
+    await store.reload();
+
+    await store.commit((s) => markReviewed(s, "a.md"));
+    expect(repaints).toEqual(["write", "repaint"]);
+  });
+
+  test("a transition that changes nothing writes nothing", async () => {
+    const h = harness();
+    await h.store.reload();
+
+    expect(await h.store.commit((s) => reset(s))).toBe(true);
+    expect(h.writes).toHaveLength(0);
+  });
+
+  // #110: a queued write must not land on top of state just adopted from disk.
+  test("a reload joins the queue behind a pending write", async () => {
+    const h = harness({ manualWrites: true });
+    await h.store.reload();
+
+    h.store.setState(markReviewed(h.store.state, "a.md"));
+
+    const order: string[] = [];
+    const write = h.store.save().then(() => order.push("write"));
+    const reload = h.store.reload().then(() => order.push("reload"));
+
+    await h.settle(true);
+    await Promise.all([write, reload]);
+
+    // Before this fix the reload resolved first and the queued write then
+    // overwrote the state it had just adopted from disk.
+    expect(order).toEqual(["write", "reload"]);
   });
 });
