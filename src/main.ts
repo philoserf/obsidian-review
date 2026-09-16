@@ -240,6 +240,10 @@ export default class ReviewPlugin extends Plugin {
    * reload will contradict. commit writes nothing when the transition changes
    * nothing, so the call itself needs no guard.
    *
+   * That is a decision, not the omission it can look like — the alternative,
+   * applying a rename in memory whether or not it can be written, was written
+   * down and rejected for the reason above.
+   *
    * Telling the settings tab is a different question, because `invalidate`
    * throws away a half-typed row. Almost every vault event has nothing to do
    * with the review — an attachment Sync moved, a note another plugin wrote —
@@ -256,12 +260,6 @@ export default class ReviewPlugin extends Plugin {
   // `instanceof TFolder` stays on this side of the boundary so `review.ts`
   // needs no Obsidian import and stays directly testable; the distinction
   // crosses as the `isFolder` boolean.
-  //
-  // Routing these through `reconcile` rather than updating memory directly was
-  // the decision, not the omission it can look like: the alternative — apply
-  // the rename in memory whether or not it can be written — was considered and
-  // rejected, because a fenced session would then report exclusions that the
-  // next reload contradicts.
   private handleFileRename = (file: TAbstractFile, oldPath: string) =>
     this.reconcile((s) =>
       renamePath(s, oldPath, file.path, file instanceof TFolder),

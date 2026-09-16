@@ -318,12 +318,6 @@ Ranked by how likely the mistake is and how quiet the damage:
 
 Where I am inferring from code, and where I think the code is in tension with itself.
 
-**The rename-under-fence decision is recorded in an issue, not in the code.** I am confident
-it was deliberate, because the alternative was written down and rejected. But a reader of
-`main.ts` alone sees only that the handlers call `commit`, with a comment explaining what that
-does and not that the other option was considered. That is the claim in this document I would
-most want a second opinion on.
-
 **Nothing enforces that transitions are pure.** The value they operate on is thoroughly
 protected — `ReadonlySet`, `readonly` arrays and fields, all three checked and all three
 compile errors. But a transition that mutated its argument and returned it would defeat the
