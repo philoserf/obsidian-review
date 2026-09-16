@@ -24,5 +24,24 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/review.ts", "src/store.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "obsidian": "review.ts and store.ts must stay Obsidian-free \u2014 the whole test suite rests on it. See CLAUDE.md, 'The boundary'."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }
