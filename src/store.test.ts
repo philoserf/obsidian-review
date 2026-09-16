@@ -74,6 +74,19 @@ describe("reload", () => {
     expect(h.store.blocked).toBeNull();
   });
 
+  // The pair that matters, and the distinction #179 was about: "no saved data"
+  // and "saved data I could not read" look identical downstream — both leave
+  // EMPTY_STATE — and only the second must refuse to write. The plugin's `load`
+  // is what keeps them apart; these two pin what the store does with each.
+  test("a load returning null is a fresh install, and writing is allowed", async () => {
+    const h = harness();
+    await h.store.reload();
+    expect(h.store.blocked).toBeNull();
+    expect(h.notices).toHaveLength(0);
+    expect(await h.store.commit((s) => markReviewed(s, "a.md"))).toBe(true);
+    expect(h.writes).toHaveLength(1);
+  });
+
   // The fence exists for this user: a read that failed must not be overwritten
   // by the defaults we fell back to.
   test("a load that throws sets the fence and notifies", async () => {

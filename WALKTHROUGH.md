@@ -457,9 +457,10 @@ is precisely the user the fence exists for and the one no test could previously 
 
 Two independent reasons to refuse writes, and they protect different things.
 
-**A read that failed** must not be overwritten by the defaults it fell back to. If `loadData`
+**A read that failed** must not be overwritten by the defaults it fell back to. If `load`
 throws, the state is `EMPTY_STATE` — and saving that would destroy a review the plugin simply
-could not read this time.
+could not read this time. Which `load` the plugin passes in is therefore load-bearing; see
+"Binding the store to Obsidian" below, where it does not use `loadData`.
 
 **Data from a newer schema** must not be truncated to what this version understands. A future
 version writing `schemaVersion: 3` with fields this build does not know about would lose them
@@ -578,7 +579,7 @@ no re-export shim.
 
 ```ts
   readonly store = new Store({
-    load: () => this.loadData(),
+    load: () => this.readData(),
     save: (data) => this.saveData(data),
     notify: (message) => new Notice(message),
     log: (message, err) => console.error(`[review] ${message}`, err),
@@ -586,14 +587,33 @@ no re-export shim.
     onChange: () => this.statusBar?.update(),
   });
 
+  private readData = async (): Promise<unknown> => {
+    const path = `${this.manifest.dir}/data.json`;
+    if (!(await this.app.vault.adapter.exists(path))) return null;
+    return JSON.parse(await this.app.vault.adapter.read(path));
+  };
+
   /** The persisted document. Read-only here; the store owns replacement. */
   get state(): PluginState {
     return this.store.state;
   }
 ```
 
-Six one-line adapters. The `?.` on `statusBar` matters: `onChange` can fire during `onload`,
-before the status bar has been constructed.
+Five one-line adapters and one that is not. The `?.` on `statusBar` matters: `onChange` can
+fire during `onload`, before the status bar has been constructed.
+
+**`load` is deliberately not `loadData`**, and this is the single most load-bearing line in the
+file. The store's read-failure fence refuses to write when `load` _throws_; Obsidian's
+`loadData` never throws. Given a file it cannot parse it returns `undefined`, and given no file
+it returns `null` — both of which reach the store as "nothing saved yet". So a truncated
+`data.json` was read as a fresh install, and the first write replaced it with defaults: exactly
+the loss the fence exists to prevent, in the mechanism built to prevent it.
+
+Reading the file here puts the failure back in the plugin's own hands. `JSON.parse` throwing on
+bad input is a language guarantee; `loadData` returning `undefined` for that case is an
+undocumented internal, and the fence must not rest on one. `exists` is what keeps a fresh
+install — which must _not_ fence — apart from a damaged one, the distinction `loadData`
+collapses.
 
 `state` is a getter with no setter, so no UI module can assign to it even by accident.
 

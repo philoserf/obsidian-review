@@ -35,13 +35,35 @@ export default class ReviewPlugin extends Plugin {
    * the save path — the plugin's densest code — reachable from a test.
    */
   readonly store = new Store({
-    load: () => this.loadData(),
+    load: () => this.readData(),
     save: (data) => this.saveData(data),
     notify: (message) => new Notice(message),
     log: (message, err) => console.error(`[review] ${message}`, err),
     warn: (message) => console.warn(`[review] ${message}`),
     onChange: () => this.statusBar?.update(),
   });
+
+  /**
+   * Read `data.json` ourselves rather than through `loadData`, because the
+   * store's read-failure fence needs a *thrown* error and `loadData` never
+   * throws: given a file it cannot parse it returns `undefined`, and given no
+   * file at all it returns `null`. Both reach the store as "nothing saved yet",
+   * so a truncated file — the ordinary result of a sync conflict — used to be
+   * read as a fresh install and overwritten with defaults on the next write.
+   * That is the loss the fence exists to prevent.
+   *
+   * `JSON.parse` throwing is a language guarantee; `loadData` returning
+   * `undefined` for that case is an undocumented internal, and the mechanism
+   * that protects unreconstructible work must not rest on one.
+   *
+   * `exists` is what keeps the two apart: no file is a fresh install and
+   * returns null, while a file we cannot read raises the fence.
+   */
+  private readData = async (): Promise<unknown> => {
+    const path = `${this.manifest.dir}/data.json`;
+    if (!(await this.app.vault.adapter.exists(path))) return null;
+    return JSON.parse(await this.app.vault.adapter.read(path));
+  };
 
   /** The persisted document. Read-only here; the store owns replacement. */
   get state(): PluginState {
