@@ -22,6 +22,7 @@
 - `build.ts` replaced by the `bun build` CLI (#126)
 - Release CI runs the tests and asserts the pushed tag matches `manifest.json` (#139)
 - `THEORY.md` and `WALKTHROUGH.md` rebuilt for the new architecture
+- Update dependencies (biome 2.5.14, @types/bun 1.4.2)
 
 ## 2.2.0
 
