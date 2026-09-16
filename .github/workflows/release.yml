@@ -18,9 +18,24 @@ jobs:
         with:
           bun-version: latest
 
-      - run: |
-          bun install
-          bun run build
+      # Obsidian keys installs off manifest.json, so a tag that disagrees with it
+      # installs as the manifest's version and no longer matches the release it
+      # came from. The tag filter above is a glob and cannot express digits-only,
+      # so this is also what stops a prerelease tag publishing as a full release.
+      - name: Verify tag matches manifest
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          manifest="$(bun -e 'console.log(require("./manifest.json").version)')"
+          [ "$tag" = "$manifest" ] || { echo "tag $tag != manifest $manifest"; exit 1; }
+
+      - run: bun install
+
+      # `build` is check + bundle, so it typechecks and lints but does not test.
+      # CI covers every merge to main; this covers a tag cut from a commit CI
+      # never saw.
+      - run: bun test
+
+      - run: bun run build
 
       - name: Create release
         uses: softprops/action-gh-release@v3
