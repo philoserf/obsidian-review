@@ -231,21 +231,33 @@ export default class ReviewPlugin extends Plugin {
     });
   };
 
-  // The `instanceof` stays on this side of the boundary so `Review` needs no
-  // Obsidian import and stays directly testable.
-  // Through commit like every other writer: a reconciliation that cannot be
-  // persisted must not be applied in memory either, or a blocked session
-  // reports exclusions the next reload will contradict. commit writes nothing
-  // when the transition changes nothing, so no guard is needed here.
-  private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
-    await this.commit((s) =>
-      renamePath(s, oldPath, file.path, file instanceof TFolder),
-    );
-    this.settingsTab?.invalidate();
+  /**
+   * Reconcile the stored paths against a vault change. Through commit like
+   * every other writer: a reconciliation that cannot be persisted must not be
+   * applied in memory either, or a blocked session reports exclusions the next
+   * reload will contradict. commit writes nothing when the transition changes
+   * nothing, so the call itself needs no guard.
+   *
+   * Telling the settings tab is a different question, because `invalidate`
+   * throws away a half-typed row. Almost every vault event has nothing to do
+   * with the review — an attachment Sync moved, a note another plugin wrote —
+   * and a user mid-word in a new excluded-folder row should not lose it to
+   * one. So it fires only when the reconciliation actually moved something,
+   * which is exactly what a replaced state means.
+   */
+  private reconcile = async (apply: (state: PluginState) => PluginState) => {
+    const before = this.state;
+    await this.commit(apply);
+    if (this.state !== before) this.settingsTab?.invalidate();
   };
 
-  private handleFileDelete = async (file: TAbstractFile) => {
-    await this.commit((s) => removePath(s, file.path, file instanceof TFolder));
-    this.settingsTab?.invalidate();
-  };
+  // The `instanceof` stays on this side of the boundary so `Review` needs no
+  // Obsidian import and stays directly testable.
+  private handleFileRename = (file: TAbstractFile, oldPath: string) =>
+    this.reconcile((s) =>
+      renamePath(s, oldPath, file.path, file instanceof TFolder),
+    );
+
+  private handleFileDelete = (file: TAbstractFile) =>
+    this.reconcile((s) => removePath(s, file.path, file instanceof TFolder));
 }

@@ -131,11 +131,7 @@ export function normalizeState(raw: unknown): PluginState {
   const startedAt = data.reviewStartedAt;
 
   return {
-    schemaVersion:
-      typeof data.schemaVersion === "number" &&
-      Number.isInteger(data.schemaVersion)
-        ? data.schemaVersion
-        : CURRENT_SCHEMA_VERSION,
+    schemaVersion: toSchemaVersion(data.schemaVersion),
     reviewedPaths: new Set(stringArray(data.reviewedPaths)),
     reviewStartedAt:
       typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))
@@ -150,7 +146,9 @@ export function normalizeState(raw: unknown): PluginState {
 
 **It coerces rather than throws, and that is a UX requirement rather than defensiveness.** A
 `data.json` that throws blanks the settings tab — which is the only place the user can repair
-the value that broke it. So every field degrades to its default and the tab still renders.
+the value that broke it. So the tab still renders whatever is in the file — every field but
+one degrading to its default, and the exception below is where coercing and defaulting come
+apart.
 
 Two of the five coercions have a specific failure behind them, recorded in the tests:
 
@@ -160,12 +158,30 @@ Two of the five coercions have a specific failure behind them, recorded in the t
 - `isEligible` calls `excludedFolders.some()`, which sits under the settings tab's statistics.
   A non-array there used to leave the tab blank.
 
-`schemaVersion` is the field the whole read-only fence turns on, so it gets the strictest
-check. The comment in the source says why:
+`schemaVersion` is the field the whole read-only fence turns on, which makes it the one field
+that must _not_ simply degrade to its default. `CURRENT_SCHEMA_VERSION` reads as "not newer
+than me", so falling back to it disengages the fence on precisely the file the fence exists to
+protect. It gets parsed instead:
 
-> The field that decides whether the plugin runs read-only, so it is the last one that should
-> be trusted raw. A numeric string would be coerced by `>` and then stored back as a string;
-> anything non-coercible compares false, disengaging the write fence entirely.
+`src/review.ts` — `toSchemaVersion`
+
+```ts
+function toSchemaVersion(value: unknown): number {
+  const version =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : Number.NaN;
+  return Number.isInteger(version) ? version : CURRENT_SCHEMA_VERSION;
+}
+```
+
+A version written as a string — a hand-edit, a sync tool that stringified it — is still a
+version, so it is read as the number it means and stored back as one. Only something with no
+readable version in it falls back, and that is safe in a way that falling back on `"3"` is
+not: an absent version is a fresh install or a pre-v2 file, and `{}`, `true` or `"v9"` is not
+a claim to be from the future.
 
 `serialize` is the inverse, and `EMPTY_STATE` is `normalizeState(undefined)` — a fresh install
 and the fallback for an unreadable file are the same value.
@@ -463,15 +479,15 @@ state just adopted from disk.
 ```ts
   commit = (apply: (state: PluginState) => PluginState): Promise<boolean> =>
     this.enqueue(async () => {
+      const next = apply(this.state);
+      if (next === this.state) return true;
+
       if (this.blocked) {
         this.deps.notify(
           `Review: ${this.blocked}. Changes will not be saved until you reload.`,
         );
         return false;
       }
-
-      const next = apply(this.state);
-      if (next === this.state) return true;
 
       const payload = serialize(next);
       try {
@@ -495,13 +511,18 @@ state just adopted from disk.
 
 Read it in order, because each line is load-bearing:
 
-1. **The fence is checked inside the critical section.** Not before entering it — a refusal
+1. **The transition runs inside the queue.** So it computes from whatever the previous commit
+   actually persisted. Two overlapping commits compose instead of racing.
+2. **`next === this.state` short-circuits, before the fence is consulted.** The
+   reference-equality signal, cashed in: a transition that changed nothing writes nothing and
+   still reports success — fenced or not. The ordering matters because reconciliation commits
+   on _every_ vault rename and delete, and almost none of them touch the review. Checking
+   `blocked` first made a fenced session pop a Notice for each attachment Obsidian Sync
+   happened to move.
+3. **The fence is checked inside the critical section.** Not before entering it — a refusal
    arriving while the call was waiting its turn would otherwise slip past a check that had
-   already passed.
-2. **The transition runs inside the queue too.** So it computes from whatever the previous
-   commit actually persisted. Two overlapping commits compose instead of racing.
-3. **`next === this.state` short-circuits.** The reference-equality signal, cashed in: a
-   transition that changed nothing writes nothing and still reports success.
+   already passed. Running `apply` ahead of it does not reopen that hole: `apply` is pure and
+   synchronous, so no `await` sits between the check and the write.
 4. **The write happens before the state moves.**
 5. **State is replaced only after the write resolves** — so a failure needs no undo. There is
    no rollback here because nothing was applied speculatively.
@@ -680,20 +701,22 @@ which is worse. Hence `others.length ? others : unreviewed`.
 
 ### Vault reconciliation
 
-`src/main.ts` — `handleFileRename` and `handleFileDelete`
+`src/main.ts` — `reconcile`, `handleFileRename` and `handleFileDelete`
 
 ```ts
-  private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
-    await this.commit((s) =>
-      renamePath(s, oldPath, file.path, file instanceof TFolder),
-    );
-    this.settingsTab?.invalidate();
+  private reconcile = async (apply: (state: PluginState) => PluginState) => {
+    const before = this.state;
+    await this.commit(apply);
+    if (this.state !== before) this.settingsTab?.invalidate();
   };
 
-  private handleFileDelete = async (file: TAbstractFile) => {
-    await this.commit((s) => removePath(s, file.path, file instanceof TFolder));
-    this.settingsTab?.invalidate();
-  };
+  private handleFileRename = (file: TAbstractFile, oldPath: string) =>
+    this.reconcile((s) =>
+      renamePath(s, oldPath, file.path, file instanceof TFolder),
+    );
+
+  private handleFileDelete = (file: TAbstractFile) =>
+    this.reconcile((s) => removePath(s, file.path, file instanceof TFolder));
 ```
 
 `instanceof TFolder` is the only Obsidian type test in the reconciliation path, and it stays
@@ -701,8 +724,17 @@ here so the domain module needs no Obsidian import. It crosses as the `isFolder`
 
 These go through `commit` like every other writer rather than getting an exemption. A
 reconciliation that cannot be persisted must not be applied in memory either, or a blocked
-session shows exclusions the next reload will contradict. There is no `if (changed)` guard
-because `commit` already writes nothing when the transition returns the same reference.
+session shows exclusions the next reload will contradict. There is no `if (changed)` guard on
+the commit itself, because `commit` already writes nothing when the transition returns the
+same reference.
+
+Telling the settings tab is the one thing that _does_ need a guard, and `commit` cannot supply
+it: it reports `true` for both "written" and "nothing to write". The state can, because it is
+replaced only when something changed — hence the reference comparison across the call. Without
+it, `invalidate()` fired on every vault event, and since it cancels the pending debounce and
+drops `drafts`, any attachment Obsidian Sync moved would wipe a half-typed excluded-folder row
+out from under the user. The comparison also skips the repaint after a refusal or a failed
+write, which is the same answer for the same reason.
 
 ## The command table
 
@@ -876,8 +908,10 @@ Three mechanisms, each closing a different hole:
 - **`cancel()` in `hide()`.** The 500 ms debouncer would otherwise fire after `drafts = null`.
 - **The divergence check.** An untouched tab commits nothing, so it cannot revert a
   reconciliation that happened while it was open.
-- **`invalidate()`.** Called from the rename handler, the delete handler and
-  `onExternalSettingsChange` — the three places that change the folders from outside.
+- **`invalidate()`.** Called from `onExternalSettingsChange`, and from `reconcile` when a
+  vault rename or delete actually moved the stored state — the places that change the folders
+  from outside. The "actually" is load-bearing: an unconditional call here throws away a
+  half-typed row for a vault event that had nothing to do with the review.
 
 The re-seed trigger is deliberately _"state changed and the tab did not cause it"_, never
 _"`display()` ran"_. The tab calls `display()` itself after adding a row and after the trash

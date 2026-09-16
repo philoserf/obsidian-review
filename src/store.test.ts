@@ -127,6 +127,18 @@ describe("reload", () => {
     expect(h.notices[0]).toContain("newer plugin version");
   });
 
+  // A future version's file written with a stringified version still has to
+  // fence: degrading it to the current version would let this version
+  // overwrite it with its own, narrower view of the data.
+  test("a newer schema written as a string fences writes too", async () => {
+    const h = harness({
+      initial: { schemaVersion: "99", reviewedPaths: ["a.md"] },
+    });
+    await h.store.reload();
+    expect(h.store.isBlocked).toBe(true);
+    expect(h.store.state.schemaVersion).toBe(99);
+  });
+
   test("current data is stamped with the current version", async () => {
     const h = harness({ initial: {} });
     await h.store.reload();
@@ -295,13 +307,34 @@ describe("#115 — every writer goes through the same door", () => {
   // Vault reconciliation is not exempt: a rename that cannot be persisted must
   // not be applied in memory either, or a blocked session shows exclusions the
   // next reload contradicts.
+  // The fence is the only reason this is refused, so the state has to carry a
+  // folder the rename actually moves — on empty state the transition is a
+  // no-op and would report success fenced or not.
   test("a fenced store refuses vault reconciliation", async () => {
-    const h = harness({ loadThrows: true });
+    const h = harness({
+      initial: { schemaVersion: 99, excludedFolders: ["Templates"] },
+    });
     await h.store.reload();
 
     expect(
       await h.store.commit((s) => renamePath(s, "Templates", "Meta", true)),
     ).toBe(false);
+    expect(h.store.state.excludedFolders).toEqual(["Templates"]);
+    expect(h.writes).toHaveLength(0);
+  });
+
+  // The other half: reconciliation commits on *every* vault rename and delete,
+  // and almost none of them touch the review. Checking the fence first made a
+  // blocked session pop a Notice for every attachment Sync happened to move.
+  test("a fenced store is silent about a transition that changes nothing", async () => {
+    const h = harness({ loadThrows: true });
+    await h.store.reload();
+    const noticed = h.notices.length;
+
+    expect(
+      await h.store.commit((s) => renamePath(s, "Templates", "Meta", true)),
+    ).toBe(true);
+    expect(h.notices).toHaveLength(noticed);
     expect(h.writes).toHaveLength(0);
   });
 });

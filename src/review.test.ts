@@ -125,18 +125,24 @@ describe("normalizeState", () => {
     ).toBe("2026-03-23");
   });
 
-  // The field that decides whether the plugin runs read-only. A numeric string
-  // is coerced by `>` and then stored back as a string; anything non-coercible
-  // compares false, so the write fence never engages and the next save
-  // overwrites a newer file with this version's schema.
-  test("falls back to the current version for a non-number schemaVersion", () => {
-    expect(normalizeState({ schemaVersion: "9" }).schemaVersion).toBe(
-      CURRENT_SCHEMA_VERSION,
-    );
+  // The field that decides whether the plugin runs read-only, so degrading it
+  // to the default is not the safe direction: the default reads as "not newer
+  // than me" and disengages the fence on the one file it protects.
+  test("reads a version written as a string as the number it means", () => {
+    expect(normalizeState({ schemaVersion: "9" }).schemaVersion).toBe(9);
+    expect(normalizeState({ schemaVersion: "2" }).schemaVersion).toBe(2);
+  });
+
+  // Nothing here claims to be from the future: an absent version is a fresh
+  // install or a pre-v2 file, and the rest is unreadable junk.
+  test("falls back to the current version for an unreadable schemaVersion", () => {
     expect(normalizeState({ schemaVersion: {} }).schemaVersion).toBe(
       CURRENT_SCHEMA_VERSION,
     );
     expect(normalizeState({ schemaVersion: true }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeState({ schemaVersion: "v9" }).schemaVersion).toBe(
       CURRENT_SCHEMA_VERSION,
     );
     expect(normalizeState({ schemaVersion: 2.5 }).schemaVersion).toBe(

@@ -71,9 +71,9 @@ What replaced it is one function, and the ordering inside it is the entire desig
 ```
 commit(apply):
   enter the queue
-  if blocked        → notify, return false
   next = apply(state)
   if next === state → return true          (nothing changed; write nothing)
+  if blocked        → notify, return false
   await save(serialize(next))              (write first)
   state = next                             (adopt only now)
   onChange()                               (repaint only now)
@@ -84,12 +84,17 @@ restore, and the drain-before-apply did not get fixed; they stopped being necess
 find yourself reintroducing a rollback, stop — you are rebuilding the design those four bugs
 came out of, and a comment in `main.ts` still recommends it (see the index).
 
-Two consequences you must not "simplify" away:
+Three consequences you must not "simplify" away:
 
 - **The fence is checked inside the queue**, not before entering it. Checking early and then
   awaiting is exactly the hole that let a refusal return success.
 - **The transition runs inside the queue too**, so it computes from whatever the previous
   commit actually persisted. This is what makes two rapid marks compose instead of race.
+- **The transition also runs _before_ the fence**, because a change of nothing is not a change
+  to refuse. Reconciliation commits on every vault rename and delete, and almost none of them
+  touch the review; with the fence first, a blocked session notified about each one. This does
+  not reopen the hole above — `apply` is pure and synchronous, so nothing can arrive between
+  the fence check and the write.
 
 `commit` returns `false` for both a refusal and an I/O failure, and that is deliberate rather
 than lazy: the caller's question is "is this on disk?", and both answers are no. Two callers
@@ -109,7 +114,9 @@ That single convention does three jobs at once. It replaces the booleans `rename
 used to return. It lets `commit` skip a write entirely when a keystroke changed nothing
 meaningful — note that `setExcludedFolders` compares _after_ normalizing, so typing a trailing
 slash onto a folder that is already excluded writes nothing. And it removes the `if (changed)`
-guards the vault handlers used to need.
+guards the vault handlers used to need around the _write_ — they still ask the question for the
+settings tab, by comparing the state reference across the commit, because `invalidate()` costs
+the user a half-typed row and a write costs nothing.
 
 A transition that returned a fresh object every time would still be correct, and every test
 would still pass, and the plugin would quietly write the entire reviewed-path set on every
@@ -124,19 +131,30 @@ keystroke in a folder field. Nothing would tell you.
 - **Data from a newer schema.** A future version's fields would be silently dropped on the
   next save.
 
-Three details around it look like fussiness and are not. `loadFailed` is tracked separately
-from `raw === null`, because `null` is also what a fresh install looks like. A newer version's
+Four details around it look like fussiness and are not. `loadFailed` is tracked separately from
+`raw === null`, because `null` is also what a fresh install looks like. A newer version's
 _number_ is preserved rather than stamped down, so a later successful write does not truncate
 the file's own claim about itself. And `blocked` is reassigned on **every** path through
 `reload`, `null` included — so a transient read failure lifts on the next reload rather than
 latching until Obsidian restarts.
 
+The fourth is `schemaVersion` being the one field `normalizeState` does not simply default.
+Everything else degrades to a sane value, but the sane value here — the current version —
+means "not newer than me", which is the same as switching the fence off. So a version written
+as a string is parsed rather than discarded, and only a file with no readable version in it
+falls back. That direction matters: defaulting `"3"` to `2` would let this build overwrite a
+newer version's data with its own narrower view of it.
+
 ### Coercion is a UX requirement, not defensiveness
 
-`normalizeState` coerces every field to its default instead of throwing, and the reason is
-specific: a `data.json` that throws blanks the settings tab, which is the only place the user
-can repair the value that broke it. Throwing would make the failure unrecoverable from inside
-the product.
+`normalizeState` coerces rather than throwing, and the reason is specific: a `data.json` that
+throws blanks the settings tab, which is the only place the user can repair the value that
+broke it. Throwing would make the failure unrecoverable from inside the product.
+
+Coercing is not the same as defaulting, and the distinction is the whole of the
+`schemaVersion` case above. Every other field degrades to its default because the default is
+harmless; that one is read for what it means, because its default is the thing that turns the
+fence off.
 
 Two of the coercions have an incident behind them. `new Set("abc")` yields three
 one-character members, so a string `reviewedPaths` would silently mark three paths reviewed. A
@@ -191,7 +209,9 @@ mechanisms. The debouncer is cancelled on close, or a keystroke inside the last 
 after the buffer is nulled and persists an empty list. The close only commits when the rows
 diverge from what the tab was seeded with, or an untouched tab left open across a vault rename
 writes the pre-rename list back over the reconciled one. And `invalidate()` drops the buffer
-when something outside the tab changes the folders.
+when something outside the tab changes the folders — only when it genuinely did, because the
+call is what throws a half-typed row away, and most vault events have nothing to do with the
+review.
 
 The re-seed trigger is deliberately **"state changed and the tab did not cause it"**, never
 "`display()` ran". The tab calls `display()` itself after adding a row and after the trash
@@ -213,6 +233,12 @@ other writer. The reasoning, and you may disagree with it: a blocked session sho
 that the next reload will contradict is worse than one showing a stale path, and a reload
 re-derives the correct answer from disk anyway. A rename is also not progress a user would
 mourn, which is the asymmetry that breaks the tie.
+
+Refusing has to be _quiet_, though, and that is a separate decision the first version got
+wrong. These handlers fire for every file in the vault, not only the ones under review, so a
+refusal that announces itself turns a fenced session into a stream of notices about
+attachments the user never touched. Hence the no-op check ahead of the fence: the plugin
+refuses the renames that would have changed something, and says nothing about the rest.
 
 This was a decision, not an oversight, and it is the one I would most expect a future
 maintainer to reverse without realising it had been decided.
@@ -253,7 +279,8 @@ Ranked by how likely the mistake is and how quiet the damage:
 
 1. **Reintroducing a rollback**, or moving the fence check outside the queue. Both look like
    tidying and both restore bugs that were closed by removing the mechanism rather than fixing
-   it.
+   it. Moving the fence check back _in front of_ the transition is the same class of mistake
+   with a quieter cost: correct writes, and a notice storm nobody will trace back to here.
 2. **Making a transition return a fresh object unconditionally.** Every test still passes. The
    plugin starts writing the whole reviewed-path set on every keystroke, and nothing says so.
 3. **Merging `drafts` into the stored state.** It reads as removing a redundant copy. It
