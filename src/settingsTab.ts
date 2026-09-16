@@ -54,7 +54,11 @@ export class ReviewSettingTab extends PluginSettingTab {
       btn.setWarning();
       btn.onClick(() =>
         this.plugin.runAsync(
-          this.plugin.resetReview().then(() => this.display()),
+          // Only repaint when the reset was actually persisted: a cancelled or
+          // refused reset must not re-render as though something happened.
+          this.plugin.resetReview().then((reset) => {
+            if (reset) this.display();
+          }),
           "reset review",
         ),
       );

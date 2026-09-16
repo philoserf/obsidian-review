@@ -2,7 +2,7 @@ import { type App, Modal, Setting, SuggestModal } from "obsidian";
 import type ReviewPlugin from "./plugin";
 
 export class ConfirmResetModal extends Modal {
-  private settled = false;
+  private confirmed = false;
   private resolve: (confirmed: boolean) => void;
 
   constructor(app: App, resolve: (confirmed: boolean) => void) {
@@ -16,32 +16,23 @@ export class ConfirmResetModal extends Modal {
       .setDesc("All review progress will be lost.")
       .addButton((btn) => {
         btn.setButtonText("Cancel");
-        btn.onClick(() => {
-          // settle before close: close() runs onClose, which settles false.
-          this.settle(false);
-          this.close();
-        });
+        btn.onClick(() => this.close());
       })
       .addButton((btn) => {
         btn.setButtonText("Reset");
         btn.setWarning();
         btn.onClick(() => {
-          this.settle(true);
+          this.confirmed = true;
           this.close();
         });
       });
   }
 
-  /** Resolves exactly once, whichever way the modal is dismissed. */
-  private settle = (confirmed: boolean) => {
-    if (this.settled) return;
-    this.settled = true;
-    this.resolve(confirmed);
-  };
-
+  // The one settlement site. close() always runs onClose, whether it came from
+  // a button, Escape, or a click outside, so every dismissal lands here.
   onClose(): void {
     super.onClose();
-    this.settle(false);
+    this.resolve(this.confirmed);
   }
 }
 
