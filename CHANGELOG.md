@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.4.0
+
+### Added
+
+- The settings tab now says when your changes are not being saved, before you change anything. A session whose `data.json` could not be read, or was written by a newer version of the plugin, used to look exactly like a healthy one until you edited something and read the notice that followed (#173)
+
+### Fixed
+
+- **An unreadable `data.json` is no longer replaced with an empty review.** The read-only protection never engaged: a truncated file — the ordinary result of a sync conflict or an interrupted write — was indistinguishable from a fresh install, so the next save overwrote it with defaults, losing every reviewed path, the start date and the excluded folders, silently (#179)
+- The message shown when a change cannot be saved now names the remedy that fits: reloading Obsidian recovers an unreadable file, and only updating the plugin helps when the data is from a newer version. It used to tell everyone to reload (#179)
+- The "Status bar" switch springs back when the change could not be saved, instead of sitting in the position you chose while the stored setting says otherwise (#181)
+
+### Changed
+
+- The persisted document is private to its store and read through a getter, so every change goes through the one path that checks, queues and writes it — a rule the compiler now holds rather than convention (#166)
+- The review fields are distinguishable from the preference that shares their file, so a future setting has an obvious home and "reset" keeps reading as what it does (#167)
+- `data.json` is unchanged by any of the above
+
 ## 2.3.0
 
 ### Fixed

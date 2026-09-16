@@ -1000,6 +1000,40 @@ reappear before its commit lands.
           });
 ```
 
+`src/settingsTab.ts` — the `Status bar` toggle
+
+```ts
+        let correcting = false;
+
+        toggle.onChange((value) => {
+          if (correcting) return;
+
+          this.plugin.runAsync(
+            this.plugin.setShowStatusBar(value).then((saved) => {
+              if (saved) return;
+              correcting = true;
+              toggle.setValue(this.plugin.state.showStatusBar);
+              correcting = false;
+            }),
+            "save settings",
+          );
+        });
+```
+
+The last control in the tab, and the one that says most about the whole design. Obsidian moves
+the switch on click, before anyone knows whether the write will land, so the switch is a claim
+about disk made before disk was consulted. When the claim turns out false — a fenced session, a
+failed save — it is withdrawn. Otherwise the tab contradicts the banner at the top of itself.
+
+`correcting` is not defensive habit. `setValue` re-enters `onChange` synchronously, which the
+typings do not say and the `TextComponent` above behaves as though it does not; it was verified
+in a vault. Without the flag the correction asks to store the value already stored, and today
+that terminates only because a transition changing nothing returns the same reference and
+`commit` reports success. Termination resting on a distant invariant is not termination —
+`THEORY.md` lists "making a transition return a fresh object unconditionally" among the changes
+a maintainer is most likely to make, and every test would survive it while this switch span
+forever.
+
 ### Folder autocomplete
 
 `src/folderSuggest.ts` is fourteen lines and subclasses Obsidian's `AbstractInputSuggest`,
