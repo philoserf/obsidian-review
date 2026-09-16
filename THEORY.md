@@ -1,246 +1,322 @@
 # A Theory of the Review Plugin
 
-This is the understanding you need to hold in mind to change this plugin without damaging
-it. It is not a tour of the files — `WALKTHROUGH.md` is that. Read this when you want to
-know _why_ the code resists a change you were about to make.
+This is the understanding you need to hold in mind to change this plugin without damaging it.
+It is not a tour of the files — `WALKTHROUGH.md` is that. Read this when you want to know
+_why_ the code resists a change you were about to make.
 
 ## What the system is for
 
-Someone keeps a large Obsidian vault and wants to walk the whole thing, note by note, in no
-particular order, pruning and confirming as they go. The problem is not finding a note. It
-is **coverage**: after a few hundred notes you cannot remember which you have already
-looked at, and without a record the sweep never demonstrably finishes. This plugin makes
-the sweep legible. It answers two questions and no others: _what fraction of my vault have
-I been through_, and _give me one I haven't been through yet_.
+Someone with a large vault wants to walk every note once, in no particular order, and see how
+far they have got.
 
-Three things exist in the domain. A **note** is a markdown file in the vault. The **review**
-is a single ongoing sweep with a start date and a set of visited paths — there is exactly
-one, always in progress, and "starting a new one" means resetting the old one. A **folder
-exclusion** declares a subtree out of scope: templates, daily journals, an archive. That is
-the whole vocabulary. There is no rating, no priority, no due date, no second pass, and
-`README.md` says outright that feature requests wanting those will be closed.
+That is the whole domain. A note has been visited or it has not. There is no rating, no
+schedule, no interval, no second pass, no notion of a note going stale. `README.md` declines
+those on the user's behalf, and the refusal is not modesty — it is the reason this is a
+1,400-line codebase rather than a spaced-repetition engine. A change that makes "reviewed"
+extensible is not a feature addition here; it is a different program.
 
-The binary-ness is the design, not a stage on the way to something richer. Every surface
-assumes it: the status bar has two labels, the menu has two mutating actions, `Review`
-stores a `Set<string>` with no value type, and `stats()` computes one percentage. A
-requirement like "show me notes I reviewed over a year ago" is not an increment here — it
-is a different plugin.
+The vocabulary is small and worth getting exactly right, because two of the words are easy to
+conflate:
+
+- **Eligible** — the plugin is allowed to show you this file. Markdown, and not under an
+  excluded folder.
+- **Reviewed** — you have been through it.
+
+Every surface in the UI branches on the pair, collapsed into one three-valued answer:
+`reviewed`, `not_reviewed`, or `undefined` meaning "nothing here to review". The third value
+is doing real work. Without it, "no file is open" and "this file is excluded" would have to be
+distinguished at every call site, and they never are.
 
 ## The organizing idea: the vault is the source of truth
 
-Version 2.0 threw away a "snapshot" model that kept its own copy of the vault's file list.
-Everything about the current shape follows from that decision. The plugin stores only which
-paths have been _reviewed_; to know what _exists_, it asks Obsidian
-(`vault.getMarkdownFiles()`, `plugin.ts:227`) every single time. There is no cache and no
-file-list state to go stale.
+**The plugin stores what has been visited. It does not store what exists.**
 
-The bill for that comes due in two places, and both are load-bearing:
+No file list is cached. `vault.getMarkdownFiles()` is asked fresh on every statistics render
+and every random pick. Completion is computed, never stored — which is why there is no
+"rebuild index" command and no way for the count to be wrong in a way a restart would fix.
 
-**Reconciliation instead of enumeration.** Because the plugin never lists files itself, it
-has to be told when paths move. `vault.on("rename")` and `vault.on("delete")`
-(`plugin.ts:96-111`) are the only mechanism keeping `reviewedPaths` from filling with
-addresses of files that no longer exist. `Review.rename` and `Review.remove` do the path
-surgery, and — this is the part that is easy to miss — they reconcile `excludedFolders`
-too, not just reviewed paths. Issue #80, memorialized in a comment at `review.test.ts:182`,
-is what taught the project that: excluding `Templates` and then dragging it into `Meta/`
-silently un-excluded everything inside while the settings tab kept listing the old path.
-The class docstring at `review.ts:16-25` says excluded folders live in `Review` _for exactly
-that reason_ — they are there because they need the same reconciliation, not because they
-are conceptually review state.
+That decision buys correctness by construction and pays for it in reconciliation. When a file
+moves, the stored path is now a path to nothing. When a folder moves, every stored path under
+it is wrong at once. So `renamePath` and `removePath` exist, and they are the largest
+functions in the domain module — not because path rewriting is hard, but because the
+alternative was a cached file list that could drift.
 
-**Stale entries are tolerated, not prevented.** `reviewedPaths` is not a subset of eligible
-paths and was never meant to be. Mark a note reviewed, then exclude its folder: the entry
-stays. `stats()` (`review.ts:81`) takes the eligible list as an argument and intersects,
-so the stale entry is invisible rather than wrong. If you write code that iterates
-`reviewedPaths` directly to build a list of anything user-facing, you will be wrong unless
-you re-filter through `isEligible` first. That re-filtering is the invariant; set purity is
-not.
+The consequence that is genuinely easy to miss, and that the project learned the hard way:
+**excluded folders are paths too.** They need exactly the same reconciliation as reviewed
+paths. Excluding `Templates` and then moving it to `Meta/Templates` used to silently
+un-exclude everything in it while the settings tab went on listing the old path. That is why
+`excludedFolders` lives in the same value as `reviewedPaths` and gets rewritten by the same
+two functions. If you are ever tempted to move it somewhere more "settings-like", this is the
+thing you would break.
+
+## The second idea: progress you can see must be progress on disk
+
+Nothing in a vault records that a note was visited. Obsidian writes no frontmatter, sets no
+flag, touches nothing. The entire record lives in one `data.json` — which means **a lost
+`data.json` is unreconstructible work**, in a way that a lost cache or a lost index never is.
+
+Every unusual thing about the save path follows from taking that seriously.
+
+### Commit-after-write, and what it replaced
+
+The plugin used to apply a change to memory, write, and roll back if the write failed. That
+design produced four separate filed bugs, and they were not slips — they were what a rollback
+transaction costs when the state it guards is mutable and reachable by several writers. Two
+overlapping calls took the same snapshot, so one rollback erased the other's change. The
+rollback restored one copy of the state and not the other. A refusal arriving mid-flight
+returned success.
+
+What replaced it is one function, and the ordering inside it is the entire design:
+
+```
+commit(apply):
+  enter the queue
+  if blocked        → notify, return false
+  next = apply(state)
+  if next === state → return true          (nothing changed; write nothing)
+  await save(serialize(next))              (write first)
+  state = next                             (adopt only now)
+  onChange()                               (repaint only now)
+```
+
+Nothing is applied speculatively, so **there is nothing to roll back.** The snapshot, the
+restore, and the drain-before-apply did not get fixed; they stopped being necessary. If you
+find yourself reintroducing a rollback, stop — you are rebuilding the design those four bugs
+came out of, and a comment in `main.ts` still recommends it (see the index).
+
+Two consequences you must not "simplify" away:
+
+- **The fence is checked inside the queue**, not before entering it. Checking early and then
+  awaiting is exactly the hole that let a refusal return success.
+- **The transition runs inside the queue too**, so it computes from whatever the previous
+  commit actually persisted. This is what makes two rapid marks compose instead of race.
+
+`commit` returns `false` for both a refusal and an I/O failure, and that is deliberate rather
+than lazy: the caller's question is "is this on disk?", and both answers are no. Two callers
+act on it, and both want the merged meaning. `markReviewed` will not navigate you away from a
+file whose mark was not persisted. The settings tab repaints after a reset only if the reset
+happened — where `false` additionally absorbs a third case, the user cancelling the
+confirmation dialog, which from the tab's point of view is the same event: nothing changed, so
+do not redraw as though something had.
+
+### Reference equality is the "nothing happened" signal
+
+This is the least obvious idea in the codebase and the one most likely to be broken by
+accident. A transition that changes nothing returns **the same object**, not an equal one, and
+`commit` tests with `===`.
+
+That single convention does three jobs at once. It replaces the booleans `rename` and `remove`
+used to return. It lets `commit` skip a write entirely when a keystroke changed nothing
+meaningful — note that `setExcludedFolders` compares _after_ normalizing, so typing a trailing
+slash onto a folder that is already excluded writes nothing. And it removes the `if (changed)`
+guards the vault handlers used to need.
+
+A transition that returned a fresh object every time would still be correct, and every test
+would still pass, and the plugin would quietly write the entire reviewed-path set on every
+keystroke in a folder field. Nothing would tell you.
+
+### The write fence has two independent reasons
+
+`blocked` is not one guard, it is two, and they protect different things:
+
+- **A read that failed.** If `loadData` throws, the in-memory state is the empty default —
+  and saving that would destroy a review the plugin merely could not read this time.
+- **Data from a newer schema.** A future version's fields would be silently dropped on the
+  next save.
+
+Three details around it look like fussiness and are not. `loadFailed` is tracked separately
+from `raw === null`, because `null` is also what a fresh install looks like. A newer version's
+_number_ is preserved rather than stamped down, so a later successful write does not truncate
+the file's own claim about itself. And `blocked` is reassigned on **every** path through
+`reload`, `null` included — so a transient read failure lifts on the next reload rather than
+latching until Obsidian restarts.
+
+### Coercion is a UX requirement, not defensiveness
+
+`normalizeState` coerces every field to its default instead of throwing, and the reason is
+specific: a `data.json` that throws blanks the settings tab, which is the only place the user
+can repair the value that broke it. Throwing would make the failure unrecoverable from inside
+the product.
+
+Two of the coercions have an incident behind them. `new Set("abc")` yields three
+one-character members, so a string `reviewedPaths` would silently mark three paths reviewed. A
+non-array `excludedFolders` used to leave the settings tab blank, because `isEligible` calls
+`.some()` on it and the statistics sit under that call.
 
 ## The boundary, and why it is drawn where it is
 
-`src/review.ts` and `src/data.ts` import nothing. Everything else imports `obsidian`. This
-is not layering for its own sake — it is the reason there is no Obsidian mock in the repo,
-and the reason the 47 tests run against the real classes rather than a fiction of them. The
-project deleted a hand-rolled mock in #98 and treats needing one again as evidence the
-boundary has leaked.
+`review.ts` and `store.ts` import nothing from Obsidian. Everything else does.
 
-The file-vs-folder distinction is where you can watch the boundary being held. Obsidian
-hands the rename event a `TAbstractFile`; deciding whether it is a folder needs
-`instanceof TFolder`, which needs the import. So `plugin.ts:345` does the `instanceof` and
-passes a `boolean` across, and `Review.rename(oldPath, newPath, isFolder)` takes it. The
-comment at `plugin.ts:342` states the trade explicitly. If you ever find yourself wanting
-to pass a `TFile` into `Review`, that is the moment the theory is being abandoned — and
-nothing in the toolchain will stop you, which is filed as its own finding below.
+This is the decision the entire test suite rests on. There is no Obsidian mock — one existed
+and was deleted, and needing another is treated as evidence the boundary has leaked rather
+than as a gap in tooling. The tests run against the real modules.
 
-`src/main.ts` is two lines because Obsidian requires an entrypoint by that name. It carries
-no meaning.
+The boundary moved once, and the move is the most important structural fact about this
+codebase. The write fence, the queue and the transaction used to be instance members of a
+class extending `obsidian.Plugin`, which meant the densest and most bug-prone code in the
+repository was the only code no test could reach. Six of eight findings from one audit pass
+lived in that half. The fix was not a mock: `loadData` and `saveData` are two functions, and
+injected as functions the whole save path becomes ordinary testable code. **The boundary got
+larger, not thinner** — that is the move to imitate if you ever face the same choice.
 
-## Persistence: four rails around one `saveData` call
+The one domain concept that has to cross it is the file-versus-folder distinction, and it
+crosses as a `boolean`. `instanceof TFolder` stays in `main.ts`, one line, so the domain
+module needs no Obsidian import for it.
 
-This is where the code is densest and where "simplifying" does the most damage. All of it
-guards a single premise: **review progress the user can see must be progress that is on
-disk.** Someone who has swept 1,800 of 2,400 notes and loses the record has lost work that
-cannot be reconstructed, because nothing in the vault itself records that a note was
-visited. Every rail below exists to make that unrecoverable loss impossible rather than
-unlikely.
-
-**`saveBlocked` (`plugin.ts:30`)** is a write fence with two triggers: `loadData` threw, or
-the file declares a `schemaVersion` newer than this build understands. Both mean the same
-thing — _there is data here I cannot faithfully round-trip_ — and the response is the same:
-refuse to write rather than overwrite it with what we managed to parse. The comment at
-`plugin.ts:150` flags the subtle half: it is assigned on _every_ path through
-`loadSettings`, back to `null` included, so a transient read failure is lifted by a reload
-rather than sticking for the session. And `plugin.ts:147` keeps a newer file's version
-number rather than stamping it down to 2, so if the fence is ever lifted the file is not
-silently truncated to what this build knows.
-
-**`normalizeData` (`data.ts:32`)** coerces instead of throwing, and the reason is a UX one
-rather than a robustness one: a `data.json` that throws leaves the settings tab blank, and
-the settings tab is the only place the user can repair the value that broke it. The test at
-`data.test.ts:42` records the actual incident — a non-array `excludedFolders` reached
-`.some()` and blanked the tab. The one at `:54` records the other: `new Set("abc")` yields
-three one-character paths, so a string where an array belonged silently marked notes
-reviewed.
-
-**`saveSettings` (`plugin.ts:167`)** snapshots the payload at call time and chains it onto
-`savePending`. Two properties, and both matter. Writes land in the order they were
-requested, not the order their promises happen to resolve. And a failed write does not
-stop its successor — hence the identical `then(onFulfilled, onRejected)` arms at
-`plugin.ts:191-194`, which look like a mistake and are not.
-
-**`mutate` (`plugin.ts:277`)** is the entry point for anything that changes review state
-from a user action. It refuses up front if writes are fenced, drains the queue so a rollback
-cannot be overtaken by a save that was already in flight, applies, and restores `Review` if
-the write throws. #97 is the commit that introduced it, and its message — "only commit
-mutations that were persisted" — is the invariant in six words.
-
-Above all of it sits `runAsync` (`plugin.ts:39`), which exists because Obsidian's callbacks
-are synchronous and cannot await. Without it a rejected save vanishes into an unhandled
-rejection and the user never learns their progress was not recorded.
-
-The rails are not airtight, and the gaps are worth knowing before you trust them. `mutate`
-rolls back `Review` but not the parallel copy in `this.data` that the settings tab reads;
-`onExternalSettingsChange` adopts disk state without draining the queue that is about to
-overwrite it; and three paths change state without going through `mutate` at all. All three
-are filed below.
+The boundary is now enforced by a Biome `noRestrictedImports` rule rather than trusted,
+because the erosion mode was silent: the bundler marks `obsidian` external and carries on, and
+`bun test` resolves it from `node_modules`, so a type-only import breaks nothing at runtime.
+The boundary could have eroded one `import type` at a time with every gate green.
 
 ## The seams
 
-**To Obsidian.** Five touchpoints, and the plugin never reads or writes note _content_ —
-only paths. `loadData`/`saveData` (Obsidian owns the JSON file), `getMarkdownFiles`,
-`vault.on("rename"|"delete")`, `workspace.getActiveFile`, `workspace.getLeaf().openFile`.
-`getActiveMarkdownFile` (`plugin.ts:216`) filters on `extension !== "md"` because Obsidian's
-active file can be a PDF or an image, and the plugin has nothing to say about those.
+**Obsidian, at four points.** `loadData`/`saveData` (injected into the store), the vault's
+rename and delete events, the command and settings-tab registrations, and `Notice`. Everything
+else in the Obsidian surface is presentation.
 
-**Settings tab to plugin state, via a deliberate third copy.** `ReviewSettingTab.drafts`
-(`settingsTab.ts:15`) holds excluded-folder rows _as typed_, before normalization, and this
-looks like redundant state until you see what it prevents. `setExcludedFolders` drops empty
-entries and dedupes; if the visible rows were the stored list, typing the second character
-of a duplicate would delete the row out from under the cursor, and clearing a row to retype
-it would delete the row. So the rows live in the tab, normalization happens on a 500ms
-debounce, and `hide()` commits rather than prunes so an edit inside the debounce window is
-not lost when the tab closes. Three separate bugs (#56 among them) are encoded in those
-twenty lines.
+**`runAsync`.** Obsidian's callbacks are synchronous and cannot await. Without this bridge a
+rejected promise from a command handler vanishes with no console line and no user-visible
+sign. It looks like ceremony around every call site; it is the only thing making failures
+observable.
 
-**Status bar to active file.** Three states, not two: hidden (non-markdown, or excluded),
-"Reviewed", "Not reviewed". `getActiveFileStatus` returns `undefined` for the first, and
-every caller — the status bar, the menu modal, and the `checkCallback` on all three
-mutating commands — branches on it. Hiding is done with `element.toggle()` rather than
-Obsidian's `is-hidden` class, and the comment at `statusBar.ts:56` explains why: those CSS
-rules are scoped to ribbon and stacked-tab elements, so the class styled nothing here. That
-was #108, shipped four commits ago, and it is the kind of thing that will look like a
-gratuitous deviation from convention if you don't read the comment.
+**`ReviewSettingTab.drafts`, which is the seam most likely to be "cleaned up" into a bug.**
+The excluded-folder rows are held as typed, unnormalized, separate from the stored state. That
+is _not_ a duplicate copy of state and merging it back is not a simplification. Normalization
+drops empties and dedupes, so if the visible rows were the stored list, clearing a row to
+retype it would delete the row, and typing the second character of a duplicate would collapse
+two rows into one mid-word.
 
-**Build to distribution.** `main.js` is committed, minified, and CI enforces that it matches
-a fresh build (`bun run build` then `git diff --exit-code main.js`). Bun is deliberately
-unpinned in the workflow, so a Bun release that shifts bundler output trips the same check.
-This means every source change is a two-file change, and the second file is unreviewable.
-I rebuilt during this pass: the committed `main.js` is byte-identical to a fresh build at
-`fa116ba`.
+The buffer is right; its _lifetime_ was the hard part, and the current answer took three
+mechanisms. The debouncer is cancelled on close, or a keystroke inside the last 500 ms fires
+after the buffer is nulled and persists an empty list. The close only commits when the rows
+diverge from what the tab was seeded with, or an untouched tab left open across a vault rename
+writes the pre-rename list back over the reconciled one. And `invalidate()` drops the buffer
+when something outside the tab changes the folders.
 
-## What it is shaped to accommodate
+The re-seed trigger is deliberately **"state changed and the tab did not cause it"**, never
+"`display()` ran". The tab calls `display()` itself after adding a row and after the trash
+button; re-seeding there would make a just-added empty row vanish and a just-deleted one
+reappear before its commit lands.
 
-**New commands and menu entries** slot in without structural change — register in `onload`,
-add a case in `ReviewMenuModal`. The menu's _ordering_ is the only thing with judgment in
-it: when a file is unreviewed, "mark and open next" comes first, because that is the loop
-the plugin exists to accelerate.
+### The one place two principles genuinely conflict
 
-**A new eligibility rule** — exclude by tag, by frontmatter, by filename — has one obvious
-home. `Review.isEligible` is the single predicate, and `setExcludedFolders` is documented
-(`review.ts:43`) as "the only way in" precisely so a new rule cannot be bolted on somewhere
-that skips normalization.
+"The vault is the source of truth" and "nothing changes in memory unless it reached disk" are
+both load-bearing, and they contradict each other in exactly one situation: a vault rename
+arriving while writes are fenced.
 
-**A schema change that needs to transform existing data** has no home. `CURRENT_SCHEMA_VERSION`
-is a _fence_, not a migration hook: it stops a newer file from being clobbered, and that is
-all it does. The v1 migration that used to exist was deleted in #99 on the grounds that the
-snapshot model and the reviewed-paths model had nothing in common to carry across. If you
-add a v3 that does, you will be writing the migration framework as well as the migration,
-and nothing currently forces you to bump the constant when you change the shape.
+The vault has already moved the file. Reconciling memory would keep the plugin's picture true
+and make it un-persistable. Refusing keeps memory and disk consistent and leaves the picture
+stale until a reload.
 
-**Anything that makes "reviewed" richer than a boolean** touches the data model, the status
-bar, the menu, the stats, and the persisted format at once. See the first section: that is
-a rewrite, and `README.md` has already declined it on the user's behalf.
+**The code chooses to refuse** — the rename and delete handlers go through `commit` like every
+other writer. The reasoning, and you may disagree with it: a blocked session showing exclusions
+that the next reload will contradict is worse than one showing a stale path, and a reload
+re-derives the correct answer from disk anyway. A rename is also not progress a user would
+mourn, which is the asymmetry that breaks the tie.
+
+This was a decision, not an oversight, and it is the one I would most expect a future
+maintainer to reverse without realising it had been decided.
+
+## What the system is shaped to accommodate
+
+**A new command.** Add an entry to the table in `commands.ts` — `availableWhen` is the rule,
+`run` is the action — and the palette, the review menu and the status-bar menu all pick it up.
+That was three files before the table existed.
+
+**A new query over review state.** A pure function in `review.ts`, tested directly.
+
+**A new persisted field.** Add it to `PluginData` and `PluginState`, coerce it in
+`normalizeState`, and `serialize` carries it. Note the trap the current design removed: a
+field used to be silently unpersisted unless someone remembered to add a line to the save
+path, and nothing failed if they did not.
+
+**A different storage backend.** The store takes `load` and `save` as functions. Nothing about
+it knows they are Obsidian's.
+
+### What would require rethinking something fundamental
+
+**Anything that makes "reviewed" richer than a boolean** — a score, a due date, a review
+count. The whole persisted shape assumes a set of paths. This is refused at the product level,
+so the real answer is usually "don't", but if it ever arrives, the shape is the thing to
+redesign first and the transitions second.
+
+**Caching the file list.** It would be a large performance win on a huge vault and it would
+undo the organizing idea. Every reconciliation path exists because the list is not cached.
+
+**Multi-device merge.** Conflicts are last-writer-wins on the whole file, implicitly. Ordering
+against a sync-triggered reload is handled — the reload joins the write queue — but genuine
+concurrent edits on two devices are not merged and cannot be with this shape.
 
 ## Where a maintainer would do damage
 
-Three specific ways, in descending order of how easy they are to do by accident:
+Ranked by how likely the mistake is and how quiet the damage:
 
-1. **Collapsing the three copies of state.** `Review` (authoritative), `plugin.data` (the
-   persisted mirror), and `SettingTab.drafts` (pre-normalization rows) look like duplication
-   and are not — the drafts copy in particular exists to defeat the very normalization that
-   makes the stored list correct. Merging them would reintroduce #56.
-2. **Routing a state change around `mutate`.** It will work in every test you can run
-   locally, because you cannot easily make `saveData` fail. It breaks only for the user whose
-   disk is full or whose vault is on a flaky sync mount — the exact user the rail was built
-   for.
-3. **Importing `obsidian` into `review.ts` or `data.ts`.** Nothing fails. Typecheck passes,
-   lint passes, the bundler marks it external, and the tests keep passing because a type-only
-   import has no runtime. The boundary can erode completely with every gate green.
+1. **Reintroducing a rollback**, or moving the fence check outside the queue. Both look like
+   tidying and both restore bugs that were closed by removing the mechanism rather than fixing
+   it.
+2. **Making a transition return a fresh object unconditionally.** Every test still passes. The
+   plugin starts writing the whole reviewed-path set on every keystroke, and nothing says so.
+3. **Merging `drafts` into the stored state.** It reads as removing a redundant copy. It
+   restores the mid-word row-deletion bug.
+4. **Moving `excludedFolders` out of the shared value**, into something that feels more like
+   settings. It stops being reconciled, and excluded folders silently stop excluding after a
+   rename.
+5. **Normalizing folders somewhere other than `normalizeFolders`.** The failure is silent: an
+   unnormalized entry matches nothing, so the user sees the folder listed as excluded while
+   its notes keep appearing.
+6. **Repainting the status bar optimistically again**, to remove the one-write delay. That
+   delay is the invariant being honest. If it needs addressing, the answer is a pending
+   indicator, not an earlier repaint.
 
 ## Uncertainties
 
-I am inferring intent from code, comments, commit messages and `CHANGELOG.md`. There is no
-ADR trail and one maintainer, so "the author decided X" below always means "the code reads
-as though the author decided X."
+Where I am inferring from code, and where I think the code is in tension with itself.
 
-**Whether the rename/delete bypass of `mutate` is a decision or an omission.** It is
-defensible — the vault has already moved the file, so refusing to reconcile would leave the
-plugin wrong in the other direction — but nothing says so, and the same handlers fire a
-"changes will not be saved" `Notice` that describes a user action the user did not take.
-I filed it as a finding because the two readings imply different fixes, and only the author
-can say which.
+**The rename-under-fence decision is recorded in an issue, not in the code.** I am confident
+it was deliberate, because the alternative was written down and rejected. But a reader of
+`main.ts` alone sees only that the handlers call `commit`, with a comment explaining what that
+does and not that the other option was considered. That is the claim in this document I would
+most want a second opinion on.
 
-**The status-bar toggle's placement in `plugin.data` rather than `Review`.** It is the one
-persisted field that is a preference rather than review state, and it is also the one the
-save path handles least carefully. That may be principled (it is genuinely not review
-state) or it may be where it landed when #101 consolidated everything else.
+**I cannot tell whether `showStatusBar` belongs in the persisted value or merely ended up
+there.** A closed issue ruled that it is "UI preference, not review domain" and kept it
+separate; the current type flattens it in. I argue in the index-linked finding that the
+flattening is defensible because the object's identity changed — but nothing records the
+change of mind, and I am reconstructing it.
 
-**How often `onExternalSettingsChange` actually fires.** The race I describe is real in the
-code, but I cannot tell from source whether Obsidian fires the hook aggressively enough for
-a single-user, single-device installation to ever hit it. The severity I assigned assumes it
-can.
+**Nothing enforces that transitions are pure.** The value they operate on is thoroughly
+protected — `ReadonlySet`, `readonly` arrays and fields, all three checked and all three
+compile errors. But a transition that mutated its argument and returned it would defeat the
+`===` check silently, and the type system would not object because the mutation would be of a
+local it built. I found no such transition; I am saying the guarantee is narrower than it
+looks.
 
-**The previous `THEORY.md` described a system that no longer exists.** It documented
-`rewriteReviewedPaths` and `removeByPrefix` as the tested pure functions, a v1-to-v2
-migration inside `loadSettings`, a `getReviewedCount()` method, and "no explicit lock or
-queue" on the save path. None of those are in the tree at `fa116ba` — they were removed or
-replaced by #99, #101, and #97. I have not filed that as a finding because this document
-replaces it, but it is a caution about how fast this file goes stale: three refactors in one
-release cycle invalidated most of it.
+**I do not know how often `onExternalSettingsChange` actually fires** on a single-device
+install. The ordering hole it opened was real and is closed, but whether the hook fires at all
+outside a sync setup I cannot determine from the code, and it changes how much the surrounding
+machinery is worth.
 
-**`manifest.json` still credits "originally by Alexander."** `README.md` says the fork
-diverged in data model, UI, and internal structure. Whether anything structural survives
-from the original — or whether any registry-side assumption depends on the old behavior —
-I could not determine.
+**The one-door rule is the weakest link between this theory and the code.** `CLAUDE.md` states
+that `commit` is the only way to change state, and every _method_ that bypassed it was deleted.
+The field is still public and assignable. I verified this compiles and runs. The theory in this
+document assumes the rule holds; today it holds because nobody has written the line that breaks
+it. See the index.
+
+**Everything about `main.ts` and the UI modules rests on reading the call graph**, not on
+execution. They import Obsidian and there is no mock, by choice. Claims in this document about
+what the settings tab does when a rename arrives mid-edit are traced, not observed.
 
 ## Index
 
-| #   | Severity | Issue                                                                  | Primary location                                      |
-| --- | -------- | ---------------------------------------------------------------------- | ----------------------------------------------------- |
-| 1   | high     | `external-settings-reload-does-not-await-the-write-queue`              | `src/plugin.ts:211-214`                               |
-| 2   | medium   | `mutate-rollback-leaves-plugin-data-holding-the-failed-state`          | `src/plugin.ts:296-303`, `src/settingsTab.ts:43`      |
-| 3   | medium   | `review-state-mutations-outside-mutate-apply-while-writes-are-blocked` | `src/plugin.ts:344-356`, `src/settingsTab.ts:110-117` |
-| 4   | medium   | `nothing-enforces-the-obsidian-free-boundary-in-review-and-data`       | `tsconfig.json:12`, `biome.json`                      |
-| 5   | low      | `schema-version-is-the-one-persisted-field-that-skips-normalizedata`   | `src/plugin.ts:131-132`, `src/data.ts:32`             |
+| #   | Severity | Issue                                                                    | Primary location                |
+| --- | -------- | ------------------------------------------------------------------------ | ------------------------------- |
+| 1   | medium   | `Store.state` is publicly assignable, so the one-door rule is convention | `src/store.ts` — `state`        |
+| 2   | low      | The preference-versus-review-domain distinction has no representation    | `src/review.ts` — `PluginState` |
 
-**Total: 5 issues (0 critical, 1 high, 3 medium, 1 low)**
+**Total: 2 issues (0 critical, 0 high, 1 medium, 1 low)**
+
+Three further findings on this code were filed by the walkthrough pass that ran alongside this
+one: a `commit` docstring that still describes the removed rollback, a comment citing a
+`Review` class that no longer exists, and `Store.isBlocked` having no production caller. They
+are not counted here, but the first is the one this document refers to above when it warns
+against reintroducing a rollback — the comment currently argues for it.
