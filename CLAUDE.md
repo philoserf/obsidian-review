@@ -27,7 +27,7 @@ bun run deploy                  # build, then copy main.js/manifest.json/styles.
 
 ### The boundary
 
-`src/review.ts` (`Review`, `pickRandom`) and `src/data.ts` (persisted shape) import nothing from Obsidian and hold all the logic worth testing. Everything Obsidian-facing lives in `src/plugin.ts` and the UI modules it owns (`statusBar.ts`, `settingsTab.ts`, `modals.ts`, `folderSuggest.ts`). `src/main.ts` is a two-line re-export because Obsidian requires that entrypoint name.
+`src/review.ts` (`Review`) and `src/data.ts` (persisted shape) import nothing from Obsidian and hold all the logic worth testing. Everything Obsidian-facing lives in `src/plugin.ts` and the UI modules it owns (`statusBar.ts`, `settingsTab.ts`, `modals.ts`, `folderSuggest.ts`). `src/main.ts` is a two-line re-export because Obsidian requires that entrypoint name.
 
 Keep `review.ts` and `data.ts` import-free — there is no Obsidian mock, and adding one would mean the boundary has leaked. The file-vs-folder distinction crosses as a boolean, so `instanceof TFolder` stays in `plugin.ts`.
 
@@ -61,4 +61,4 @@ Use the `obsidian-gate` then `obsidian-ship` skills — do not tag by hand. Neve
 
 ## Testing
 
-`src/review.test.ts` and `src/data.test.ts` test the Obsidian-free modules directly; clock and rng are injectable (`markReviewed(path, now)`, `pickRandom(items, rng)`). Plugin integration (Obsidian API calls) is not unit-tested — verify it by deploying into a vault.
+`src/review.test.ts` and `src/data.test.ts` test the Obsidian-free modules directly; the clock is injectable (`markReviewed(path, now)`). Plugin integration (Obsidian API calls) is not unit-tested — verify it by deploying into a vault.

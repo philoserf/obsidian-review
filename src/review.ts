@@ -1,12 +1,3 @@
-/** Uniform choice, or undefined when there is nothing to choose from. */
-export function pickRandom<T>(
-  items: readonly T[],
-  rng: () => number = Math.random,
-): T | undefined {
-  if (!items.length) return undefined;
-  return items[Math.floor(rng() * items.length)];
-}
-
 export type ReviewStats = {
   reviewed: number;
   eligible: number;
