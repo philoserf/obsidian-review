@@ -189,8 +189,10 @@ export default class ReviewPlugin extends Plugin {
 
   /**
    * Apply a review-state change and report whether it was persisted. The UI
-   * must not show progress that is not on disk: a refused write is declined
-   * before anything changes, and a failed one is rolled back.
+   * must not show progress that is not on disk, so the state is replaced only
+   * after the write resolves — a refused or failed write reports false and
+   * changes nothing. There is no rollback to restore, and reintroducing one
+   * rebuilds the design four concurrency bugs came out of.
    */
   private commit = (apply: (state: PluginState) => PluginState) =>
     this.store.commit(apply);
@@ -251,8 +253,15 @@ export default class ReviewPlugin extends Plugin {
     if (this.state !== before) this.settingsTab?.invalidate();
   };
 
-  // The `instanceof` stays on this side of the boundary so `Review` needs no
-  // Obsidian import and stays directly testable.
+  // `instanceof TFolder` stays on this side of the boundary so `review.ts`
+  // needs no Obsidian import and stays directly testable; the distinction
+  // crosses as the `isFolder` boolean.
+  //
+  // Routing these through `reconcile` rather than updating memory directly was
+  // the decision, not the omission it can look like: the alternative — apply
+  // the rename in memory whether or not it can be written — was considered and
+  // rejected, because a fenced session would then report exclusions that the
+  // next reload contradicts.
   private handleFileRename = (file: TAbstractFile, oldPath: string) =>
     this.reconcile((s) =>
       renamePath(s, oldPath, file.path, file instanceof TFolder),

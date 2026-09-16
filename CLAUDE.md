@@ -52,7 +52,7 @@ Fire-and-forget UI callbacks go through `plugin.runAsync(promise, label)` so rej
 
 ### Release process
 
-Use the `obsidian-gate` then `obsidian-ship` skills — do not tag by hand. Never hand-create GitHub releases: pushing a `x.y.z` tag runs `.github/workflows/release.yml`, which attaches `main.js`, `manifest.json`, and `styles.css`. `version-bump.ts` syncs `manifest.json` and `versions.json` from `package.json`.
+Use the `release-gate` then `release-ship` skills — do not tag by hand. Never hand-create GitHub releases: pushing a `x.y.z` tag runs `.github/workflows/release.yml`, which attaches `main.js`, `manifest.json`, and `styles.css`. `version-bump.ts` syncs `manifest.json` and `versions.json` from `package.json`.
 
 ## Gotchas
 
