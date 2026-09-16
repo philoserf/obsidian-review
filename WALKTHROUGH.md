@@ -445,11 +445,13 @@ is precisely the user the fence exists for and the one no test could previously 
     // Assigned on every path, back to null included, so a reload after a
     // transient read failure lifts the block.
     if (loadFailed) {
-      this.blocked = "saved data could not be read";
+      this.fence =
+        "Saved data could not be read. Changes will not be saved until Obsidian reloads it — your saved review will not be overwritten.";
     } else if (isNewer) {
-      this.blocked = "saved data is from a newer plugin version";
+      this.fence =
+        "Saved data is from a newer plugin version. Changes will not be saved until the plugin is updated.";
     } else {
-      this.blocked = null;
+      this.fence = null;
     }
 ```
 
@@ -468,8 +470,11 @@ Three details are easy to break and each has a reason:
 - `loadFailed` is a separate flag from `raw === null`, because `null` is also what a fresh
   install looks like.
 - The newer version's _number_ is preserved rather than stamped down to 2.
-- `blocked` is assigned on **every** path, `null` included, so reloading after a transient
+- `fence` is assigned on **every** path, `null` included, so reloading after a transient
   read failure lifts the fence rather than latching it forever.
+- The two strings carry their **remedies**, not just their causes, because the remedies differ:
+  reloading fixes an unreadable file and does nothing for a newer schema. Both the refusal
+  Notice and the settings tab render the same sentence, so a wrong remedy would be wrong twice.
 
 ### One queue for everything
 
@@ -510,10 +515,8 @@ state just adopted from disk.
       const next = apply(this.current);
       if (next === this.current) return true;
 
-      if (this.blocked) {
-        this.deps.notify(
-          `Review: ${this.blocked}. Changes will not be saved until you reload.`,
-        );
+      if (this.fence) {
+        this.deps.notify(`Review: ${this.fence}`);
         return false;
       }
 
@@ -545,7 +548,7 @@ Read it in order, because each line is load-bearing:
    reference-equality signal, cashed in: a transition that changed nothing writes nothing and
    still reports success — fenced or not. The ordering matters because reconciliation commits
    on _every_ vault rename and delete, and almost none of them touch the review. Checking
-   `blocked` first made a fenced session pop a Notice for each attachment Obsidian Sync
+   the fence first made a fenced session pop a Notice for each attachment Obsidian Sync
    happened to move.
 3. **The fence is checked inside the critical section.** Not before entering it — a refusal
    arriving while the call was waiting its turn would otherwise slip past a check that had
@@ -883,6 +886,25 @@ supplies the behaviour.
 ### Settings tab
 
 The settings tab holds the one piece of mutable UI state in the plugin, and it needs to.
+
+Before any of that, it renders the fence when one is up:
+
+```ts
+    const blocked = this.plugin.store.blocked;
+    if (blocked) {
+      containerEl.createDiv("review-blocked", (div) => {
+        div.createEl("strong").setText("Changes are not being saved");
+        div.createEl("p").setText(blocked);
+      });
+    }
+```
+
+It is first in `display()` on purpose. The fence protects a review that cannot be
+reconstructed, and until this existed the only signal was a `Notice` _after_ the user changed
+something — which is after the point where knowing would have changed what they did. This is
+the store's only public member the plugin reads besides `state`, and it reads the sentence
+rather than a boolean, because the tab must not have to know which fence is up to say what to
+do about it.
 
 `src/settingsTab.ts` — `drafts` and `seeded`
 

@@ -41,12 +41,17 @@ export class Store {
   }
 
   /**
-   * Why writing is refused, or null when it is allowed. Set on every path
-   * through reload(): data we failed to read must not be overwritten by the
-   * defaults we fell back to, and data from a newer plugin version must not be
-   * truncated to what this version understands.
+   * Why writing is refused, as the sentence the user is shown, or null when it
+   * is allowed. Set on every path through reload(): data we failed to read must
+   * not be overwritten by the defaults we fell back to, and data from a newer
+   * plugin version must not be truncated to what this version understands.
+   *
+   * It carries the remedy as well as the cause because the two fences have
+   * different ones — reloading fixes an unreadable file and does nothing for a
+   * newer schema — and both the refusal Notice and the settings tab need to say
+   * which. A caller holding only a boolean would have to guess.
    */
-  private blocked: string | null = null;
+  private fence: string | null = null;
 
   /** Tail of the serialized write queue. Never rejects — see the catch below. */
   private pending: Promise<void> = Promise.resolve();
@@ -54,15 +59,14 @@ export class Store {
   constructor(private deps: StoreDeps) {}
 
   /**
-   * True when writes are currently refused. Read only by `store.test.ts`, which
-   * is the whole of its job: it is the seam the fence assertions go through —
-   * that a failed read raises it, that a reload lifts it again, that a newer
-   * schema version raises it. Nothing in the plugin consults it, deliberately.
-   * A settings tab that showed a read-only session before the user tried to
-   * write would be the caller that changes that; see #173.
+   * Why writes are refused, or null when they are allowed. The settings tab
+   * renders it, so a read-only session is visible before the user changes
+   * anything rather than after — the fence protects work that cannot be
+   * reconstructed, and finding out about it from a Notice means finding out too
+   * late to have chosen differently.
    */
-  get isBlocked(): boolean {
-    return this.blocked !== null;
+  get blocked(): string | null {
+    return this.fence;
   }
 
   private readFromDisk = async (): Promise<void> => {
@@ -105,11 +109,13 @@ export class Store {
     // Assigned on every path, back to null included, so a reload after a
     // transient read failure lifts the block.
     if (loadFailed) {
-      this.blocked = "saved data could not be read";
+      this.fence =
+        "Saved data could not be read. Changes will not be saved until Obsidian reloads it — your saved review will not be overwritten.";
     } else if (isNewer) {
-      this.blocked = "saved data is from a newer plugin version";
+      this.fence =
+        "Saved data is from a newer plugin version. Changes will not be saved until the plugin is updated.";
     } else {
-      this.blocked = null;
+      this.fence = null;
     }
   };
 
@@ -148,16 +154,16 @@ export class Store {
       // The transition runs before the fence is consulted, because a change of
       // nothing is not a change to refuse. Vault reconciliation commits on
       // every rename and delete in the vault — attachments, daily notes, files
-      // another plugin writes — and checking `blocked` first made a fenced
+      // another plugin writes — and checking the fence first made a fenced
       // session pop a Notice for each one. `apply` is pure and synchronous, so
       // no await window opens between here and the fence below.
       const next = apply(this.current);
       if (next === this.current) return true;
 
-      if (this.blocked) {
-        this.deps.notify(
-          `Review: ${this.blocked}. Changes will not be saved until you reload.`,
-        );
+      if (this.fence) {
+        // The fence carries its own remedy, so this no longer tells a user on a
+        // newer schema to reload — which would not have helped them.
+        this.deps.notify(`Review: ${this.fence}`);
         return false;
       }
 
