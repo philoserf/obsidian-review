@@ -54,6 +54,25 @@ function normalizeFolders(list: readonly string[]): string[] {
   return normalized;
 }
 
+/**
+ * The field the read-only fence turns on, so it is the one field that must not
+ * quietly degrade to the default: `CURRENT_SCHEMA_VERSION` reads as "not newer
+ * than me", which disengages the fence on exactly the file it exists to
+ * protect. A version written as a string — a hand-edit, a sync tool that
+ * stringified it — is still a version, so parse it rather than discard it, and
+ * store it back as the number it always meant. A file with no version in it is
+ * a fresh install or a pre-v2 file, not the future, and gets the current one.
+ */
+function toSchemaVersion(value: unknown): number {
+  const version =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : Number.NaN;
+  return Number.isInteger(version) ? version : CURRENT_SCHEMA_VERSION;
+}
+
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
@@ -78,15 +97,7 @@ export function normalizeState(raw: unknown): PluginState {
   const startedAt = data.reviewStartedAt;
 
   return {
-    // The field that decides whether the plugin runs read-only, so it is the
-    // last one that should be trusted raw. A numeric string would be coerced
-    // by `>` and then stored back as a string; anything non-coercible compares
-    // false, disengaging the write fence entirely.
-    schemaVersion:
-      typeof data.schemaVersion === "number" &&
-      Number.isInteger(data.schemaVersion)
-        ? data.schemaVersion
-        : CURRENT_SCHEMA_VERSION,
+    schemaVersion: toSchemaVersion(data.schemaVersion),
     reviewedPaths: new Set(stringArray(data.reviewedPaths)),
     reviewStartedAt:
       typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))

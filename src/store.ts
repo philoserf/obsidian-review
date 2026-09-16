@@ -125,15 +125,21 @@ export class Store {
    */
   commit = (apply: (state: PluginState) => PluginState): Promise<boolean> =>
     this.enqueue(async () => {
+      // The transition runs before the fence is consulted, because a change of
+      // nothing is not a change to refuse. Vault reconciliation commits on
+      // every rename and delete in the vault — attachments, daily notes, files
+      // another plugin writes — and checking `blocked` first made a fenced
+      // session pop a Notice for each one. `apply` is pure and synchronous, so
+      // no await window opens between here and the fence below.
+      const next = apply(this.state);
+      if (next === this.state) return true;
+
       if (this.blocked) {
         this.deps.notify(
           `Review: ${this.blocked}. Changes will not be saved until you reload.`,
         );
         return false;
       }
-
-      const next = apply(this.state);
-      if (next === this.state) return true;
 
       const payload = serialize(next);
       try {
