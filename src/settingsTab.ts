@@ -1,6 +1,7 @@
 import { type App, debounce, PluginSettingTab, Setting } from "obsidian";
 import { FolderSuggest } from "./folderSuggest";
 import type ReviewPlugin from "./plugin";
+import { setShowStatusBar } from "./review";
 
 export class ReviewSettingTab extends PluginSettingTab {
   plugin: ReviewPlugin;
@@ -38,15 +39,15 @@ export class ReviewSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     if (!this.drafts) {
-      this.drafts = [...this.plugin.review.excludedFolders];
+      this.drafts = [...this.plugin.state.excludedFolders];
     }
     const drafts = this.drafts;
 
     const reviewSetting = new Setting(containerEl)
       .setName("Review")
       .setDesc(
-        this.plugin.review.reviewStartedAt
-          ? `Review started on ${new Date(this.plugin.review.reviewStartedAt).toLocaleDateString()}.`
+        this.plugin.state.reviewStartedAt
+          ? `Review started on ${new Date(this.plugin.state.reviewStartedAt).toLocaleDateString()}.`
           : "No active review.",
       );
     reviewSetting.addButton((btn) => {
@@ -117,9 +118,9 @@ export class ReviewSettingTab extends PluginSettingTab {
       .setName("Status bar")
       .setDesc("Show file review status in the status bar.")
       .addToggle((toggle) => {
-        toggle.setValue(this.plugin.showStatusBar);
+        toggle.setValue(this.plugin.state.showStatusBar);
         toggle.onChange((value) => {
-          this.plugin.showStatusBar = value;
+          this.plugin.state = setShowStatusBar(this.plugin.state, value);
           this.plugin.statusBar.update();
           this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
         });

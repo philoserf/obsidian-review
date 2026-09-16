@@ -1,75 +1,157 @@
 import { describe, expect, test } from "bun:test";
-import { Review } from "./review";
+import {
+  CURRENT_SCHEMA_VERSION,
+  EMPTY_STATE,
+  isEligible,
+  isReviewed,
+  markReviewed,
+  markUnreviewed,
+  normalizeState,
+  type PluginState,
+  removePath,
+  renamePath,
+  reset,
+  serialize,
+  setExcludedFolders,
+  setShowStatusBar,
+  stats,
+} from "./review";
 
-function reviewWith(
+function stateWith(
   paths: string[],
   excludedFolders: string[] = [],
   startedAt?: string,
-): Review {
-  const review = new Review();
-  review.load(paths, excludedFolders, startedAt);
-  return review;
+): PluginState {
+  // Built directly rather than through normalizeState, so the tests can use
+  // sentinel clock values ("loaded", "first") that are not parseable dates.
+  return {
+    ...normalizeState({ excludedFolders }),
+    reviewedPaths: new Set(paths),
+    reviewStartedAt: startedAt,
+  };
 }
 
-describe("isEligible", () => {
-  test("excludes a file in an excluded folder", () => {
-    expect(reviewWith([], ["templates"]).isEligible("templates/note.md")).toBe(
-      false,
+describe("normalizeState", () => {
+  test("passes a fully valid object through", () => {
+    expect(
+      serialize(
+        normalizeState({
+          reviewedPaths: ["a.md", "b.md"],
+          reviewStartedAt: "2026-03-23T10:00:00.000Z",
+          excludedFolders: ["templates"],
+          showStatusBar: false,
+        }),
+      ),
+    ).toEqual({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      reviewedPaths: ["a.md", "b.md"],
+      reviewStartedAt: "2026-03-23T10:00:00.000Z",
+      excludedFolders: ["templates"],
+      showStatusBar: false,
+    });
+  });
+
+  test("supplies defaults for an empty object", () => {
+    expect(serialize(normalizeState({}))).toEqual({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      reviewedPaths: [],
+      reviewStartedAt: undefined,
+      excludedFolders: [],
+      showStatusBar: true,
+    });
+  });
+
+  test.each([[null], [undefined], ["not an object"], [42], [[]]])(
+    "returns defaults for %p as the whole input",
+    (raw) => {
+      expect(serialize(normalizeState(raw))).toEqual({
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        reviewedPaths: [],
+        reviewStartedAt: undefined,
+        excludedFolders: [],
+        showStatusBar: true,
+      });
+    },
+  );
+
+  // isEligible calls excludedFolders.some(), which sits under stats() in the
+  // settings tab — a non-array here used to leave the tab blank, so the user
+  // could not repair the value that broke it.
+  test("replaces a non-array excludedFolders with an empty list", () => {
+    expect(normalizeState({ excludedFolders: null }).excludedFolders).toEqual(
+      [],
+    );
+    expect(
+      normalizeState({ excludedFolders: "templates" }).excludedFolders,
+    ).toEqual([]);
+  });
+
+  // new Set("abc") yields {"a","b","c"} — silently reviewed one-character paths.
+  test("replaces a string reviewedPaths with an empty list", () => {
+    expect([...normalizeState({ reviewedPaths: "abc" }).reviewedPaths]).toEqual(
+      [],
     );
   });
 
-  test("excludes a file in a nested subfolder", () => {
+  test("drops non-string members of the path lists", () => {
     expect(
-      reviewWith([], ["templates"]).isEligible("templates/sub/note.md"),
-    ).toBe(false);
+      serialize(
+        normalizeState({
+          reviewedPaths: ["a.md", 7, null, "b.md"],
+          excludedFolders: ["templates", { path: "daily" }],
+        }),
+      ),
+    ).toEqual({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      reviewedPaths: ["a.md", "b.md"],
+      reviewStartedAt: undefined,
+      excludedFolders: ["templates"],
+      showStatusBar: true,
+    });
   });
 
-  // The `${folder}/` boundary: "templates" must not match "templates-extra".
-  test("does not exclude a path that only shares a prefix", () => {
+  test("drops a reviewStartedAt that is not a parseable date", () => {
     expect(
-      reviewWith([], ["templates"]).isEligible("templates-extra/note.md"),
-    ).toBe(true);
+      normalizeState({ reviewStartedAt: "yesterday" }).reviewStartedAt,
+    ).toBeUndefined();
+    expect(
+      normalizeState({ reviewStartedAt: 1742731200000 }).reviewStartedAt,
+    ).toBeUndefined();
   });
 
-  test("does not exclude a root-level file", () => {
-    expect(reviewWith([], ["templates"]).isEligible("note.md")).toBe(true);
-  });
-});
-
-describe("setExcludedFolders", () => {
-  test("trims whitespace and strips trailing slashes", () => {
-    const review = new Review();
-    review.setExcludedFolders([" Templates ", "Daily//"]);
-    expect(review.excludedFolders).toEqual(["Templates", "Daily"]);
+  test("keeps a date-only reviewStartedAt", () => {
+    expect(
+      normalizeState({ reviewStartedAt: "2026-03-23" }).reviewStartedAt,
+    ).toBe("2026-03-23");
   });
 
-  test("drops empty entries", () => {
-    const review = new Review();
-    review.setExcludedFolders(["Templates", "", "   ", "/"]);
-    expect(review.excludedFolders).toEqual(["Templates"]);
+  // The field that decides whether the plugin runs read-only. A numeric string
+  // is coerced by `>` and then stored back as a string; anything non-coercible
+  // compares false, so the write fence never engages and the next save
+  // overwrites a newer file with this version's schema.
+  test("falls back to the current version for a non-number schemaVersion", () => {
+    expect(normalizeState({ schemaVersion: "9" }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeState({ schemaVersion: {} }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeState({ schemaVersion: true }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeState({ schemaVersion: 2.5 }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeState({}).schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
   });
 
-  test("dedupes entries that normalize to the same folder", () => {
-    const review = new Review();
-    review.setExcludedFolders(["Templates", "Templates/", " Templates"]);
-    expect(review.excludedFolders).toEqual(["Templates"]);
+  test("keeps a genuinely newer schemaVersion, so the fence can engage", () => {
+    expect(normalizeState({ schemaVersion: 9 }).schemaVersion).toBe(9);
   });
 
-  test("a normalized entry actually excludes", () => {
-    const review = new Review();
-    review.setExcludedFolders([" Templates/ "]);
-    expect(review.isEligible("Templates/note.md")).toBe(false);
-  });
-});
-
-describe("load", () => {
-  test("replaces existing state", () => {
-    const review = reviewWith(["a.md"], ["old"], "2026-01-01T00:00:00.000Z");
-    review.load(["b.md"], ["new"]);
-    expect(review.isReviewed("a.md")).toBe(false);
-    expect(review.isReviewed("b.md")).toBe(true);
-    expect(review.excludedFolders).toEqual(["new"]);
-    expect(review.reviewStartedAt).toBeUndefined();
+  test("falls back to true for a non-boolean showStatusBar", () => {
+    expect(normalizeState({ showStatusBar: null }).showStatusBar).toBe(true);
+    expect(normalizeState({ showStatusBar: "false" }).showStatusBar).toBe(true);
   });
 
   // The disk path. A synced or hand-edited data.json can hold anything, and an
@@ -77,57 +159,145 @@ describe("load", () => {
   // `${folder}/` prefix — the user sees the folder listed as excluded and its
   // notes keep appearing in review.
   test("normalizes folders coming off disk", () => {
-    const review = new Review();
-    review.load([], ["Templates/", " Daily ", "", "Daily"]);
-    expect(review.excludedFolders).toEqual(["Templates", "Daily"]);
-    expect(review.isEligible("Templates/note.md")).toBe(false);
-    expect(review.isEligible("Daily/note.md")).toBe(false);
+    const state = normalizeState({
+      excludedFolders: ["Templates/", " Daily ", "", "Daily"],
+    });
+    expect(state.excludedFolders).toEqual(["Templates", "Daily"]);
+    expect(isEligible(state, "Templates/note.md")).toBe(false);
+    expect(isEligible(state, "Daily/note.md")).toBe(false);
+  });
+
+  test("round-trips through serialize", () => {
+    const state = stateWith(["a.md"], ["templates"], "2026-03-23");
+    expect(normalizeState(serialize(state))).toEqual(state);
+  });
+});
+
+describe("isEligible", () => {
+  test("excludes a file in an excluded folder", () => {
+    expect(isEligible(stateWith([], ["templates"]), "templates/note.md")).toBe(
+      false,
+    );
+  });
+
+  test("excludes a file in a nested subfolder", () => {
+    expect(
+      isEligible(stateWith([], ["templates"]), "templates/sub/note.md"),
+    ).toBe(false);
+  });
+
+  // The `${folder}/` boundary: "templates" must not match "templates-extra".
+  test("does not exclude a path that only shares a prefix", () => {
+    expect(
+      isEligible(stateWith([], ["templates"]), "templates-extra/note.md"),
+    ).toBe(true);
+  });
+
+  test("does not exclude a root-level file", () => {
+    expect(isEligible(stateWith([], ["templates"]), "note.md")).toBe(true);
+  });
+});
+
+describe("setExcludedFolders", () => {
+  test("trims whitespace and strips trailing slashes", () => {
+    expect(
+      setExcludedFolders(EMPTY_STATE, [" Templates ", "Daily//"])
+        .excludedFolders,
+    ).toEqual(["Templates", "Daily"]);
+  });
+
+  test("drops empty entries", () => {
+    expect(
+      setExcludedFolders(EMPTY_STATE, ["Templates", "", "   ", "/"])
+        .excludedFolders,
+    ).toEqual(["Templates"]);
+  });
+
+  test("dedupes entries that normalize to the same folder", () => {
+    expect(
+      setExcludedFolders(EMPTY_STATE, ["Templates", "Templates/", " Templates"])
+        .excludedFolders,
+    ).toEqual(["Templates"]);
+  });
+
+  test("a normalized entry actually excludes", () => {
+    const state = setExcludedFolders(EMPTY_STATE, [" Templates/ "]);
+    expect(isEligible(state, "Templates/note.md")).toBe(false);
+  });
+
+  test("returns the same state when the list is unchanged", () => {
+    const state = stateWith([], ["Templates"]);
+    expect(setExcludedFolders(state, ["Templates/"])).toBe(state);
   });
 });
 
 describe("markReviewed", () => {
   test("starts the review clock on first mark only", () => {
-    const review = new Review();
-    review.markReviewed("a.md", () => "first");
-    review.markReviewed("b.md", () => "second");
-    expect(review.reviewStartedAt).toBe("first");
+    let state = markReviewed(EMPTY_STATE, "a.md", () => "first");
+    state = markReviewed(state, "b.md", () => "second");
+    expect(state.reviewStartedAt).toBe("first");
   });
 
   test("keeps an existing review clock", () => {
-    const review = reviewWith(["a.md"], [], "loaded");
-    review.markReviewed("b.md", () => "later");
-    expect(review.reviewStartedAt).toBe("loaded");
+    const state = markReviewed(
+      stateWith(["a.md"], [], "loaded"),
+      "b.md",
+      () => "later",
+    );
+    expect(state.reviewStartedAt).toBe("loaded");
+  });
+
+  test("returns the same state for an already-reviewed path", () => {
+    const state = stateWith(["a.md"], [], "loaded");
+    expect(markReviewed(state, "a.md")).toBe(state);
   });
 });
 
 describe("markUnreviewed", () => {
   test("removes the path but keeps the review clock", () => {
-    const review = reviewWith(["a.md"], [], "loaded");
-    review.markUnreviewed("a.md");
-    expect(review.isReviewed("a.md")).toBe(false);
-    expect(review.reviewStartedAt).toBe("loaded");
+    const state = markUnreviewed(stateWith(["a.md"], [], "loaded"), "a.md");
+    expect(isReviewed(state, "a.md")).toBe(false);
+    expect(state.reviewStartedAt).toBe("loaded");
+  });
+
+  test("returns the same state for an unreviewed path", () => {
+    const state = stateWith(["a.md"]);
+    expect(markUnreviewed(state, "x.md")).toBe(state);
+  });
+});
+
+describe("setShowStatusBar", () => {
+  test("flips the preference", () => {
+    expect(setShowStatusBar(EMPTY_STATE, false).showStatusBar).toBe(false);
+  });
+
+  test("returns the same state when unchanged", () => {
+    expect(setShowStatusBar(EMPTY_STATE, true)).toBe(EMPTY_STATE);
   });
 });
 
 describe("reset", () => {
   test("clears paths and the review clock", () => {
-    const review = reviewWith(["a.md", "b.md"], [], "loaded");
-    review.reset();
-    expect(review.reviewedPaths.size).toBe(0);
-    expect(review.reviewStartedAt).toBeUndefined();
+    const state = reset(stateWith(["a.md", "b.md"], [], "loaded"));
+    expect(state.reviewedPaths.size).toBe(0);
+    expect(state.reviewStartedAt).toBeUndefined();
   });
 
   test("leaves excluded folders alone", () => {
-    const review = reviewWith(["a.md"], ["templates"]);
-    review.reset();
-    expect(review.excludedFolders).toEqual(["templates"]);
+    expect(reset(stateWith(["a.md"], ["templates"])).excludedFolders).toEqual([
+      "templates",
+    ]);
+  });
+
+  test("returns the same state when there is nothing to reset", () => {
+    expect(reset(EMPTY_STATE)).toBe(EMPTY_STATE);
   });
 });
 
 describe("stats", () => {
   test("computes stats for partial review", () => {
-    const review = reviewWith(["a.md", "b.md", "elsewhere.md"]);
-    expect(review.stats(["a.md", "b.md", "c.md", "d.md"])).toEqual({
+    const state = stateWith(["a.md", "b.md", "elsewhere.md"]);
+    expect(stats(state, ["a.md", "b.md", "c.md", "d.md"])).toEqual({
       reviewed: 2,
       eligible: 4,
       percentCompleted: 50,
@@ -135,107 +305,116 @@ describe("stats", () => {
   });
 
   test("handles zero eligible files", () => {
-    expect(new Review().stats([]).percentCompleted).toBe(0);
+    expect(stats(EMPTY_STATE, []).percentCompleted).toBe(0);
   });
 });
 
 describe("rename a file", () => {
   test("moves a reviewed path", () => {
-    const review = reviewWith(["a.md"]);
-    expect(review.rename("a.md", "b.md", false)).toBe(true);
-    expect(review.isReviewed("b.md")).toBe(true);
-    expect(review.isReviewed("a.md")).toBe(false);
+    const before = stateWith(["a.md"]);
+    const after = renamePath(before, "a.md", "b.md", false);
+    expect(after).not.toBe(before);
+    expect(isReviewed(after, "b.md")).toBe(true);
+    expect(isReviewed(after, "a.md")).toBe(false);
   });
 
-  test("returns false for an unreviewed path", () => {
-    expect(reviewWith(["a.md"]).rename("x.md", "y.md", false)).toBe(false);
+  test("is a no-op for an unreviewed path", () => {
+    const state = stateWith(["a.md"]);
+    expect(renamePath(state, "x.md", "y.md", false)).toBe(state);
   });
 
   test("never touches excluded folders", () => {
-    const review = reviewWith([], ["Templates"]);
-    expect(review.rename("Templates", "Renamed", false)).toBe(false);
-    expect(review.excludedFolders).toEqual(["Templates"]);
+    const state = stateWith([], ["Templates"]);
+    expect(renamePath(state, "Templates", "Renamed", false)).toBe(state);
+    expect(state.excludedFolders).toEqual(["Templates"]);
   });
 });
 
 describe("rename a folder", () => {
-  // renameFolder maps entries independently, so a rename can collide two
+  // renamePath maps entries independently, so a rename can collide two
   // exclusions onto the same path.
   test("dedupes when a rename collides two exclusions", () => {
-    const review = reviewWith([], ["A", "B"]);
-    review.rename("B", "A", true);
-    expect(review.excludedFolders).toEqual(["A"]);
+    const state = renamePath(stateWith([], ["A", "B"]), "B", "A", true);
+    expect(state.excludedFolders).toEqual(["A"]);
   });
 
   test("dedupes when a nested exclusion collides with its parent", () => {
-    const review = reviewWith([], ["Meta", "Meta/Templates"]);
-    review.rename("Meta/Templates", "Meta", true);
-    expect(review.excludedFolders).toEqual(["Meta"]);
+    const state = renamePath(
+      stateWith([], ["Meta", "Meta/Templates"]),
+      "Meta/Templates",
+      "Meta",
+      true,
+    );
+    expect(state.excludedFolders).toEqual(["Meta"]);
   });
 
   test("rewrites reviewed paths under it", () => {
-    const review = reviewWith(["folder/a.md", "folder/sub/b.md", "other/c.md"]);
-    expect(review.rename("folder", "renamed", true)).toBe(true);
-    expect(review.isReviewed("renamed/a.md")).toBe(true);
-    expect(review.isReviewed("renamed/sub/b.md")).toBe(true);
-    expect(review.isReviewed("other/c.md")).toBe(true);
-    expect(review.reviewedPaths.size).toBe(3);
+    const before = stateWith(["folder/a.md", "folder/sub/b.md", "other/c.md"]);
+    const after = renamePath(before, "folder", "renamed", true);
+    expect(after).not.toBe(before);
+    expect(isReviewed(after, "renamed/a.md")).toBe(true);
+    expect(isReviewed(after, "renamed/sub/b.md")).toBe(true);
+    expect(isReviewed(after, "other/c.md")).toBe(true);
+    expect(after.reviewedPaths.size).toBe(3);
   });
 
   // #80: excluding Templates then moving it silently un-excluded everything
   // in it, while the settings tab went on listing the old path.
   test("rewrites the excluded folder itself", () => {
-    const review = reviewWith([], ["Templates"]);
-    expect(review.rename("Templates", "Meta/Templates", true)).toBe(true);
-    expect(review.excludedFolders).toEqual(["Meta/Templates"]);
-    expect(review.isEligible("Meta/Templates/note.md")).toBe(false);
+    const before = stateWith([], ["Templates"]);
+    const after = renamePath(before, "Templates", "Meta/Templates", true);
+    expect(after).not.toBe(before);
+    expect(after.excludedFolders).toEqual(["Meta/Templates"]);
+    expect(isEligible(after, "Meta/Templates/note.md")).toBe(false);
   });
 
   test("rewrites an excluded folder nested under the renamed one", () => {
-    const review = reviewWith([], ["Meta/Templates"]);
-    expect(review.rename("Meta", "Admin", true)).toBe(true);
-    expect(review.excludedFolders).toEqual(["Admin/Templates"]);
+    const before = stateWith([], ["Meta/Templates"]);
+    const after = renamePath(before, "Meta", "Admin", true);
+    expect(after).not.toBe(before);
+    expect(after.excludedFolders).toEqual(["Admin/Templates"]);
   });
 
-  test("returns false when nothing matches", () => {
-    const review = reviewWith(["other/a.md"], ["other"]);
-    expect(review.rename("folder", "renamed", true)).toBe(false);
-    expect(review.isReviewed("other/a.md")).toBe(true);
-    expect(review.excludedFolders).toEqual(["other"]);
+  test("is a no-op when nothing matches", () => {
+    const state = stateWith(["other/a.md"], ["other"]);
+    expect(renamePath(state, "folder", "renamed", true)).toBe(state);
+    expect(isReviewed(state, "other/a.md")).toBe(true);
+    expect(state.excludedFolders).toEqual(["other"]);
   });
 
   test("does not rewrite a path that only shares a prefix", () => {
-    const review = reviewWith(["folder-extra/a.md"], ["folder-extra"]);
-    expect(review.rename("folder", "renamed", true)).toBe(false);
-    expect(review.isReviewed("folder-extra/a.md")).toBe(true);
-    expect(review.excludedFolders).toEqual(["folder-extra"]);
+    const state = stateWith(["folder-extra/a.md"], ["folder-extra"]);
+    expect(renamePath(state, "folder", "renamed", true)).toBe(state);
+    expect(isReviewed(state, "folder-extra/a.md")).toBe(true);
+    expect(state.excludedFolders).toEqual(["folder-extra"]);
   });
 });
 
 describe("remove a folder", () => {
   test("removes all reviewed paths under it", () => {
-    const review = reviewWith(["folder/a.md", "folder/sub/b.md", "other/c.md"]);
-    expect(review.remove("folder", true)).toBe(true);
-    expect(review.reviewedPaths.size).toBe(1);
-    expect(review.isReviewed("other/c.md")).toBe(true);
+    const before = stateWith(["folder/a.md", "folder/sub/b.md", "other/c.md"]);
+    const after = removePath(before, "folder", true);
+    expect(after).not.toBe(before);
+    expect(after.reviewedPaths.size).toBe(1);
+    expect(isReviewed(after, "other/c.md")).toBe(true);
   });
 
   test("drops the excluded folder and its descendants", () => {
-    const review = reviewWith([], ["folder", "folder/sub", "other"]);
-    expect(review.remove("folder", true)).toBe(true);
-    expect(review.excludedFolders).toEqual(["other"]);
+    const before = stateWith([], ["folder", "folder/sub", "other"]);
+    const after = removePath(before, "folder", true);
+    expect(after).not.toBe(before);
+    expect(after.excludedFolders).toEqual(["other"]);
   });
 
-  test("returns false when nothing matches", () => {
-    expect(reviewWith(["other/a.md"], ["other"]).remove("folder", true)).toBe(
-      false,
-    );
+  test("is a no-op when nothing matches", () => {
+    const state = stateWith(["other/a.md"], ["other"]);
+    expect(removePath(state, "folder", true)).toBe(state);
   });
 
   test("does not remove a path that only shares a prefix", () => {
-    const review = reviewWith(["folder-extra/a.md"], ["folder-extra"]);
-    expect(review.remove("folder", true)).toBe(false);
-    expect(review.isReviewed("folder-extra/a.md")).toBe(true);
-    expect(review.excludedFolders).toEqual(["folder-extra"]);
+    const state = stateWith(["folder-extra/a.md"], ["folder-extra"]);
+    expect(removePath(state, "folder", true)).toBe(state);
+    expect(isReviewed(state, "folder-extra/a.md")).toBe(true);
+    expect(state.excludedFolders).toEqual(["folder-extra"]);
   });
 });
