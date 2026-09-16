@@ -136,13 +136,22 @@ keystroke in a folder field. Nothing would tell you.
 
 `blocked` is not one guard, it is two, and they protect different things:
 
-- **A read that failed.** If `loadData` throws, the in-memory state is the empty default —
-  and saving that would destroy a review the plugin merely could not read this time.
+- **A read that failed.** If `load` throws, the in-memory state is the empty default — and
+  saving that would destroy a review the plugin merely could not read this time. **This arm
+  was unreachable until it was fixed**, and the way it failed is the lesson: the plugin bound
+  `load` to Obsidian's `loadData`, which never throws — it returns `undefined` for a file it
+  cannot parse and `null` for no file at all, and both reached the store as "nothing saved
+  yet". A truncated `data.json`, the ordinary result of a sync conflict, was read as a fresh
+  install and overwritten on the next write. The store's own tests were right about everything
+  downstream of a thrown `load`; nothing could tell them the real `load` never threw. `load`
+  now reads and parses the file itself, so the throw is a language guarantee rather than an
+  Obsidian implementation detail.
 - **Data from a newer schema.** A future version's fields would be silently dropped on the
   next save.
 
 Four details around it look like fussiness and are not. `loadFailed` is tracked separately from
-`raw === null`, because `null` is also what a fresh install looks like. A newer version's
+`raw === null`, because `null` is also what a fresh install looks like — and keeping those two
+apart is the whole job of the `exists` check in the plugin's `load`. A newer version's
 _number_ is preserved rather than stamped down, so a later successful write does not truncate
 the file's own claim about itself. And `blocked` is reassigned on **every** path through
 `reload`, `null` included — so a transient read failure lifts on the next reload rather than
