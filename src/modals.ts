@@ -1,4 +1,5 @@
 import { type App, Modal, Setting, SuggestModal } from "obsidian";
+import { availableCommands, type ReviewCommand } from "./commands";
 import type ReviewPlugin from "./plugin";
 
 export class ConfirmResetModal extends Modal {
@@ -36,8 +37,6 @@ export class ConfirmResetModal extends Modal {
   }
 }
 
-type ReviewCommand = { id: string; name: string };
-
 export class ReviewMenuModal extends SuggestModal<ReviewCommand> {
   plugin: ReviewPlugin;
 
@@ -54,35 +53,8 @@ export class ReviewMenuModal extends SuggestModal<ReviewCommand> {
   }
 
   getSuggestions = (query: string): ReviewCommand[] => {
-    const file = this.plugin.getActiveMarkdownFile();
-    let suggestions: ReviewCommand[];
-
-    if (!file || !this.plugin.isFileEligible(file.path)) {
-      suggestions = [
-        { id: "open_random", name: "Open random unreviewed file" },
-      ];
-    } else {
-      const isReviewed = this.plugin.isReviewed(file.path);
-
-      if (isReviewed) {
-        suggestions = [
-          { id: "open_random", name: "Open random unreviewed file" },
-          { id: "unreview", name: "Mark file as unreviewed" },
-        ];
-      } else {
-        suggestions = [
-          {
-            id: "review_and_next",
-            name: "Mark file as reviewed and open next",
-          },
-          { id: "review", name: "Mark file as reviewed" },
-          { id: "open_random", name: "Open random unreviewed file" },
-        ];
-      }
-    }
-
-    return suggestions.filter((s) =>
-      s.name.toLowerCase().includes(query.toLowerCase()),
+    return availableCommands(this.plugin.getActiveFileStatus()).filter((c) =>
+      c.name.toLowerCase().includes(query.toLowerCase()),
     );
   };
 
@@ -90,23 +62,7 @@ export class ReviewMenuModal extends SuggestModal<ReviewCommand> {
     el.createEl("div", { text: suggestion.name });
   };
 
-  onChooseSuggestion = (suggestion: ReviewCommand) => {
-    switch (suggestion.id) {
-      case "open_random":
-        this.plugin.runAsync(this.plugin.openRandomFile(), "open random file");
-        break;
-      case "review":
-        this.plugin.runAsync(this.plugin.markReviewed(), "mark reviewed");
-        break;
-      case "review_and_next":
-        this.plugin.runAsync(
-          this.plugin.markReviewed({ openNext: true }),
-          "mark reviewed",
-        );
-        break;
-      case "unreview":
-        this.plugin.runAsync(this.plugin.markUnreviewed(), "mark unreviewed");
-        break;
-    }
+  onChooseSuggestion = (command: ReviewCommand) => {
+    this.plugin.runAsync(command.run(this.plugin), command.label);
   };
 }

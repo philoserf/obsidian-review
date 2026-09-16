@@ -27,9 +27,9 @@ bun run deploy                  # build, then copy main.js/manifest.json/styles.
 
 ### The boundary
 
-`src/review.ts` (the persisted shape, its validation, and the pure transitions over it) and `src/store.ts` (the state, the write fence and the write queue) import nothing from Obsidian and hold all the logic worth testing. Everything Obsidian-facing lives in `src/plugin.ts` and the UI modules it owns (`statusBar.ts`, `settingsTab.ts`, `modals.ts`, `folderSuggest.ts`). `src/main.ts` is a two-line re-export because Obsidian requires that entrypoint name.
+`src/review.ts` (the persisted shape, its validation, and the pure transitions over it) and `src/store.ts` (the state, the write fence and the write queue) import nothing from Obsidian and hold all the logic worth testing. Everything Obsidian-facing lives in `src/plugin.ts` and the UI modules it owns (`statusBar.ts`, `settingsTab.ts`, `modals.ts`, `folderSuggest.ts`). `src/commands.ts` is the one table of review actions and their availability rule, read by the command palette, the review menu and the status-bar menu — adding an action means editing one array. `src/main.ts` is a two-line re-export because Obsidian requires that entrypoint name.
 
-Keep `review.ts` and `store.ts` import-free — there is no Obsidian mock, and adding one would mean the boundary has leaked. The file-vs-folder distinction crosses as a boolean, so `instanceof TFolder` stays in `plugin.ts`.
+Keep `review.ts` and `store.ts` import-free — there is no Obsidian mock, and adding one would mean the boundary has leaked. A Biome `noRestrictedImports` override on those two files enforces it, so importing `obsidian` there fails `bun run check` rather than eroding one `import type` at a time. The file-vs-folder distinction crosses as a boolean, so `instanceof TFolder` stays in `plugin.ts`.
 
 ### Data model
 

@@ -5,6 +5,7 @@ import {
   type TFile,
   TFolder,
 } from "obsidian";
+import { COMMANDS } from "./commands";
 import { ConfirmResetModal, ReviewMenuModal } from "./modals";
 import {
   isEligible,
@@ -67,39 +68,25 @@ export default class ReviewPlugin extends Plugin {
 
     this.statusBar = new StatusBar(this.addStatusBarItem(), this);
 
-    this.addCommand({
-      id: "open-random-unreviewed",
-      name: "Open random unreviewed file",
-      callback: () => this.runAsync(this.openRandomFile(), "open random file"),
-    });
-    this.addCommand({
-      id: "mark-reviewed",
-      name: "Mark file as reviewed",
-      checkCallback: (checking) => {
-        if (this.getActiveFileStatus() !== "not_reviewed") return false;
-        if (!checking) this.runAsync(this.markReviewed(), "mark reviewed");
-        return true;
-      },
-    });
-    this.addCommand({
-      id: "mark-reviewed-and-open-next",
-      name: "Mark file as reviewed and open next",
-      checkCallback: (checking) => {
-        if (this.getActiveFileStatus() !== "not_reviewed") return false;
-        if (!checking)
-          this.runAsync(this.markReviewed({ openNext: true }), "mark reviewed");
-        return true;
-      },
-    });
-    this.addCommand({
-      id: "mark-unreviewed",
-      name: "Mark file as unreviewed",
-      checkCallback: (checking) => {
-        if (this.getActiveFileStatus() !== "reviewed") return false;
-        if (!checking) this.runAsync(this.markUnreviewed(), "mark unreviewed");
-        return true;
-      },
-    });
+    for (const command of COMMANDS) {
+      this.addCommand({
+        id: command.id,
+        name: command.name,
+        ...(command.availableWhen
+          ? {
+              checkCallback: (checking: boolean) => {
+                if (this.getActiveFileStatus() !== command.availableWhen)
+                  return false;
+                if (!checking) this.runAsync(command.run(this), command.label);
+                return true;
+              },
+            }
+          : {
+              callback: () => this.runAsync(command.run(this), command.label),
+            }),
+      });
+    }
+
     this.addCommand({
       id: "open-review-menu",
       name: "Open review menu",
@@ -146,24 +133,16 @@ export default class ReviewPlugin extends Plugin {
     return activeFile;
   };
 
-  isFileEligible = (path: string): boolean => {
-    return isEligible(this.state, path);
-  };
-
   getEligibleFiles = (): TFile[] => {
     return this.app.vault
       .getMarkdownFiles()
-      .filter((f) => this.isFileEligible(f.path));
+      .filter((f) => isEligible(this.state, f.path));
   };
 
   getActiveFileStatus = (): "reviewed" | "not_reviewed" | undefined => {
     const file = this.getActiveMarkdownFile();
-    if (!file || !this.isFileEligible(file.path)) return undefined;
-    return this.isReviewed(file.path) ? "reviewed" : "not_reviewed";
-  };
-
-  isReviewed = (path: string): boolean => {
-    return isReviewed(this.state, path);
+    if (!file || !isEligible(this.state, file.path)) return undefined;
+    return isReviewed(this.state, file.path) ? "reviewed" : "not_reviewed";
   };
 
   getStats = (): ReviewStats => {

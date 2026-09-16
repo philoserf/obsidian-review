@@ -1,4 +1,5 @@
 import { Menu } from "obsidian";
+import { COMMANDS } from "./commands";
 import type ReviewPlugin from "./plugin";
 
 export class StatusBar {
@@ -32,23 +33,24 @@ export class StatusBar {
     const status = this.plugin.getActiveFileStatus();
     if (!status) return;
 
-    const isReviewed = status === "reviewed";
     const menu = new Menu();
 
-    menu.addItem((item) => {
-      item.setTitle("Reviewed");
-      item.setChecked(isReviewed);
-      item.onClick(() =>
-        this.plugin.runAsync(this.plugin.markReviewed(), "mark reviewed"),
-      );
-    });
-    menu.addItem((item) => {
-      item.setTitle("Not reviewed");
-      item.setChecked(!isReviewed);
-      item.onClick(() =>
-        this.plugin.runAsync(this.plugin.markUnreviewed(), "mark unreviewed"),
-      );
-    });
+    // The two plain state changes, named by id: "mark and open next" also
+    // carries availableWhen but navigates, which is not what a checkbox in a
+    // status-bar menu means. Reading run/label from the table still keeps the
+    // actions from drifting from the commands they stand for.
+    for (const id of ["mark-reviewed", "mark-unreviewed"] as const) {
+      const command = COMMANDS.find((c) => c.id === id);
+      if (!command) continue;
+
+      menu.addItem((item) => {
+        item.setTitle(id === "mark-reviewed" ? "Reviewed" : "Not reviewed");
+        item.setChecked(command.availableWhen !== status);
+        item.onClick(() =>
+          this.plugin.runAsync(command.run(this.plugin), command.label),
+        );
+      });
+    }
 
     menu.showAtMouseEvent(event);
   };
