@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeData } from "./data";
+import { CURRENT_SCHEMA_VERSION, normalizeData } from "./data";
 
 describe("normalizeData", () => {
   test("passes a fully valid object through", () => {
@@ -11,6 +11,7 @@ describe("normalizeData", () => {
         showStatusBar: false,
       }),
     ).toEqual({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       reviewedPaths: ["a.md", "b.md"],
       reviewStartedAt: "2026-03-23T10:00:00.000Z",
       excludedFolders: ["templates"],
@@ -20,6 +21,7 @@ describe("normalizeData", () => {
 
   test("supplies defaults for an empty object", () => {
     expect(normalizeData({})).toEqual({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       reviewedPaths: [],
       reviewStartedAt: undefined,
       excludedFolders: [],
@@ -31,6 +33,7 @@ describe("normalizeData", () => {
     "returns defaults for %p as the whole input",
     (raw) => {
       expect(normalizeData(raw)).toEqual({
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         reviewedPaths: [],
         reviewStartedAt: undefined,
         excludedFolders: [],
@@ -63,6 +66,7 @@ describe("normalizeData", () => {
         excludedFolders: ["templates", { path: "daily" }],
       }),
     ).toEqual({
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       reviewedPaths: ["a.md", "b.md"],
       reviewStartedAt: undefined,
       excludedFolders: ["templates"],
@@ -83,6 +87,30 @@ describe("normalizeData", () => {
     expect(
       normalizeData({ reviewStartedAt: "2026-03-23" }).reviewStartedAt,
     ).toBe("2026-03-23");
+  });
+
+  // The field that decides whether the plugin runs read-only. A numeric string
+  // is coerced by `>` and then stored back as a string; anything non-coercible
+  // compares false, so the write fence never engages and the next save
+  // overwrites a newer file with this version's schema.
+  test("falls back to the current version for a non-number schemaVersion", () => {
+    expect(normalizeData({ schemaVersion: "9" }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeData({ schemaVersion: {} }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeData({ schemaVersion: true }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeData({ schemaVersion: 2.5 }).schemaVersion).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(normalizeData({}).schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  test("keeps a genuinely newer schemaVersion, so the fence can engage", () => {
+    expect(normalizeData({ schemaVersion: 9 }).schemaVersion).toBe(9);
   });
 
   test("falls back to true for a non-boolean showStatusBar", () => {

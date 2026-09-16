@@ -5,12 +5,7 @@ import {
   type TFile,
   TFolder,
 } from "obsidian";
-import {
-  CURRENT_SCHEMA_VERSION,
-  normalizeData,
-  type PluginData,
-  type SavedData,
-} from "./data";
+import { CURRENT_SCHEMA_VERSION, normalizeData, type PluginData } from "./data";
 import { ConfirmResetModal, ReviewMenuModal } from "./modals";
 import { Review, type ReviewStats } from "./review";
 import { ReviewSettingTab } from "./settingsTab";
@@ -115,7 +110,7 @@ export default class ReviewPlugin extends Plugin {
   };
 
   loadSettings = async () => {
-    let saved: SavedData | null = null;
+    let saved: unknown = null;
     let loadFailed = false;
     try {
       saved = await this.loadData();
@@ -128,7 +123,10 @@ export default class ReviewPlugin extends Plugin {
       );
     }
 
-    const savedVersion = saved?.schemaVersion ?? CURRENT_SCHEMA_VERSION;
+    // Every persisted field, schemaVersion included, passes through the one
+    // validator before anything reads it.
+    const normalized = normalizeData(saved);
+    const savedVersion = normalized.schemaVersion;
     const isNewer = savedVersion > CURRENT_SCHEMA_VERSION;
 
     if (isNewer) {
@@ -141,7 +139,7 @@ export default class ReviewPlugin extends Plugin {
     }
 
     this.data = {
-      ...normalizeData(saved),
+      ...normalized,
       // Keep a newer version's number, so the file is not truncated to v2
       // if something later lifts the write block.
       schemaVersion: isNewer ? savedVersion : CURRENT_SCHEMA_VERSION,
