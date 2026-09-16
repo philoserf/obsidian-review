@@ -1,7 +1,6 @@
 import { type App, debounce, PluginSettingTab, Setting } from "obsidian";
 import { FolderSuggest } from "./folderSuggest";
 import type ReviewPlugin from "./plugin";
-import { setShowStatusBar } from "./review";
 
 export class ReviewSettingTab extends PluginSettingTab {
   plugin: ReviewPlugin;
@@ -14,6 +13,13 @@ export class ReviewSettingTab extends PluginSettingTab {
    * mid-word.
    */
   private drafts: string[] | null = null;
+
+  /**
+   * What `drafts` was seeded from. `hide()` compares against it so an untouched
+   * tab commits nothing — otherwise closing the tab writes back a snapshot that
+   * may be older than what the vault has since reconciled.
+   */
+  private seeded: string[] = [];
 
   private debouncedCommit = debounce(() => this.commit(), 500, true);
 
@@ -38,8 +44,14 @@ export class ReviewSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
+    // Seeded once per tab session, not per render: display() is also called by
+    // the tab itself after adding or deleting a row, and re-seeding there would
+    // make a just-added empty row vanish and a just-deleted one reappear before
+    // its async commit lands. invalidate() is what re-seeds, and only when the
+    // change came from outside.
     if (!this.drafts) {
-      this.drafts = [...this.plugin.state.excludedFolders];
+      this.seeded = [...this.plugin.state.excludedFolders];
+      this.drafts = [...this.seeded];
     }
     const drafts = this.drafts;
 
@@ -120,12 +132,27 @@ export class ReviewSettingTab extends PluginSettingTab {
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.state.showStatusBar);
         toggle.onChange((value) => {
-          this.plugin.store.setState(
-            setShowStatusBar(this.plugin.state, value),
+          // Through commit: a blocked write used to leave the switch flipped
+          // and the bar hidden with nothing on disk, and the next reload
+          // silently put it back.
+          this.plugin.runAsync(
+            this.plugin.setShowStatusBar(value),
+            "save settings",
           );
-          this.plugin.runAsync(this.plugin.saveSettings(), "save settings");
         });
       });
+  }
+
+  /**
+   * Drop the editing buffer because something outside the tab changed the
+   * excluded folders — a vault rename or delete, or a reload from disk. The
+   * vault is authoritative over an open editor, which is the reconciliation
+   * policy the rest of the plugin already follows.
+   */
+  invalidate(): void {
+    this.debouncedCommit.cancel();
+    this.drafts = null;
+    if (this.containerEl.isShown()) this.display();
   }
 
   hide(): void {
@@ -134,8 +161,13 @@ export class ReviewSettingTab extends PluginSettingTab {
     this.debouncedCommit.cancel();
 
     // Commit rather than prune: an edit made inside the debounce window would
-    // otherwise be lost when the tab closes.
-    this.commit();
+    // otherwise be lost when the tab closes. Only when the rows actually
+    // diverge from what the tab was given, though — an untouched tab that has
+    // been open across a vault rename would otherwise write the pre-rename
+    // list back over the reconciled one.
+    if (this.drafts && this.drafts.join("\n") !== this.seeded.join("\n")) {
+      this.commit();
+    }
     this.drafts = null;
   }
 }
