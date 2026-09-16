@@ -1,1346 +1,1019 @@
 # Review Plugin Walkthrough
 
-*2026-09-09T22:45:13Z by Showboat 0.6.1*
-<!-- showboat-id: eb958de8-b84f-4d16-908b-27009d5086b7 -->
+A linear read of every module, in the order the code runs.
 
 ## Overview
 
 **Review** is an Obsidian plugin that walks you through your vault one note at a time and
-tracks which notes you have already been through. Every markdown file is in exactly one of
-two states — reviewed or not reviewed — and the plugin's entire job is to remember that set,
-hand you a random note that is not in it, and tell you how far through the vault you are.
+remembers which notes you have already seen. Every markdown file is in exactly one of two
+states — reviewed or not reviewed — and the plugin's whole job is to remember that set, hand
+you a random note that is not in it, and tell you how far through the vault you are.
+
+It answers two questions and declines the rest. `README.md` refuses ratings, schedules and
+second passes explicitly, and that refusal is why this is a 1,400-line codebase.
 
 The toolchain is Bun-only. Bun runs the tests (`bun test`), bundles `src/main.ts` into a
-committed `main.js` (`build.ts`), and copies the built plugin into a vault (`deploy.ts`).
-Type checking is `tsc --noEmit`; linting and formatting are Biome.
+committed `main.js` (`bun build`, invoked from `package.json`), and copies the built plugin
+into a vault (`deploy.ts`). Type checking is `tsc --noEmit`; TypeScript linting and
+formatting are Biome; markdown is prettier.
 
-There are three entry points into the code, and they are worth naming up front because the
-rest of the walkthrough follows them:
+Three things enter this code from outside, and the walkthrough follows them in turn:
 
-1. **Obsidian loading the plugin** — Obsidian reads `manifest.json`, requires `main.js`, and
-   calls `onload()` on the default export.
-2. **The user triggering a command** — five commands registered in `onload`, plus a ribbon
-   icon, a status-bar item, and a settings tab.
-3. **The vault changing underneath the plugin** — `rename` and `delete` events that the
-   plugin must react to in order to keep its stored paths pointing at real files.
+1. **Obsidian loads the plugin.** It reads `manifest.json`, requires `main.js`, constructs
+   `ReviewPlugin` and calls `onload`.
+2. **The user acts** — a command, the ribbon icon, the status bar, the settings tab.
+3. **The vault or the filesystem changes underneath** — a rename, a delete, or another
+   device rewriting `data.json` through sync.
 
-```bash
-cat manifest.json
-```
+### The one organising decision
 
-```output
-{
-  "id": "review",
-  "name": "Review",
-  "version": "2.2.0",
-  "minAppVersion": "1.6.0",
-  "description": "Randomly review your vault and track progress",
-  "author": "Mark Ayers (originally by Alexander)",
-  "authorUrl": "https://github.com/philoserf",
-  "isDesktopOnly": false
-}
-```
+**The vault is the source of truth for what exists; the plugin stores only what has been
+visited.** No file list is cached — `vault.getMarkdownFiles()` is asked fresh every time.
 
-`main` names the bundle Obsidian requires; `isDesktopOnly: false` is honest here because the
-plugin touches no Node APIs at runtime — only Obsidian's vault and workspace.
+The bill for that is reconciliation: when a file moves or disappears, the stored paths have
+to be rewritten to match, and because excluded folders are also paths, they need the same
+treatment. That single decision is why `renamePath` and `removePath` exist, and why they are
+the largest functions in the domain module.
+
+The second decision follows from the first. Nothing in a vault records that a note was
+visited, so a lost `data.json` is unreconstructible work. **Progress the user can see must be
+progress that is on disk** — which is what the store exists to guarantee.
 
 ## Architecture
 
-Ten TypeScript files in `src/`, split along one line that governs everything else: two
-modules import nothing at all, and the rest import `obsidian`.
-
-```bash
-cd src && wc -l *.ts | sort -k1 -n
+```
+src/
+  review.ts        the persisted document, its validation, and pure transitions over it
+  store.ts         owns the state, the write fence and the write queue
+  main.ts          the Obsidian adapter: commands, events, actions
+  commands.ts      one table of review actions and their availability rule
+  statusBar.ts     status-bar item and its click menu
+  settingsTab.ts   settings pane, including the excluded-folder editor
+  modals.ts        reset confirmation, and the review menu
+  folderSuggest.ts folder autocomplete for the excluded-folder rows
 ```
 
-```output
-       2 main.ts
-      14 folderSuggest.ts
-      51 data.ts
-      62 statusBar.ts
-      92 data.test.ts
-     121 modals.ts
-     126 settingsTab.ts
-     159 review.ts
-     250 review.test.ts
-     357 plugin.ts
-    1234 total
+Dependencies point one way:
+
+```
+review.ts  ←  store.ts  ←  main.ts  ←  commands.ts, statusBar.ts, settingsTab.ts, modals.ts
 ```
 
-The boundary is visible in the imports. `review.ts` and `data.ts` have none; every other
-non-test module imports `obsidian`:
+`review.ts` and `store.ts` import nothing from Obsidian. That boundary is what the entire
+test suite rests on: the tests run against the real modules with no mock. It is enforced
+rather than trusted — a Biome `noRestrictedImports` override on those two files fails
+`bun run check` if either ever imports `obsidian`.
 
-```bash
-echo 'imports obsidian:'; grep -l 'from "obsidian"' src/*.ts | sort; echo; echo 'imports nothing:'; grep -L 'from "obsidian"' src/*.ts | sort
+Everything below `main.ts` depends on it only for its _type_, which is why the UI modules
+take a `ReviewPlugin` in their constructors. The one domain concept that has to cross the
+boundary is the file-versus-folder distinction, and it crosses as a `boolean`.
+
+### Data flow
+
+```
+data.json ──load──► normalizeState ──► PluginState ──► queries ──► UI
+                                            │
+                        user action ──► transition (pure)
+                                            │
+                                      Store.commit
+                                            │
+                              serialize ──► saveData ──► data.json
+                                            │
+                                    then, and only then,
+                                    state is replaced and
+                                    the UI repaints
 ```
 
-```output
-imports obsidian:
-src/folderSuggest.ts
-src/modals.ts
-src/plugin.ts
-src/settingsTab.ts
-src/statusBar.ts
+## The persisted document
 
-imports nothing:
-src/data.test.ts
-src/data.ts
-src/main.ts
-src/review.test.ts
-src/review.ts
+`src/review.ts` holds two shapes for the same information. One is what JSON can carry; the
+other is what the code wants to work with.
+
+`src/review.ts` — `PluginData` and `PluginState`
+
+```ts
+/** The shape written to `data.json`. Arrays, because JSON has no Set. */
+export type PluginData = {
+  schemaVersion: number;
+  reviewedPaths: string[];
+  reviewStartedAt?: string;
+  excludedFolders: string[];
+  showStatusBar: boolean;
+};
+
+export type PluginState = {
+  readonly schemaVersion: number;
+  readonly reviewedPaths: ReadonlySet<string>;
+  readonly reviewStartedAt?: string;
+  readonly excludedFolders: readonly string[];
+  readonly showStatusBar: boolean;
+};
 ```
 
-That is not incidental tidiness. It is why there is no Obsidian mock in the repository: the
-47 unit tests run against the real `Review` and the real `normalizeData`, because those two
-modules can be constructed without an Obsidian runtime. `main.ts` is on the second list only
-because it is two lines of re-export.
+Five fields, and the split between them is not arbitrary. `reviewedPaths` is membership-tested
+on every eligibility check, so in memory it is a `Set`; on disk it has to be an array. Every
+field is `readonly`, because the document is replaced rather than modified — the property the
+whole save path depends on.
 
-Data flows in one direction most of the time:
+### Validation, and why it coerces instead of throwing
 
-    data.json  --loadData-->  normalizeData  -->  plugin.data  -->  Review (in memory)
-                                                       ^                  |
-                                                       +---saveSettings---+
-                                                                |
-                                                            saveData --> data.json
+`data.json` is the least trustworthy thing the plugin reads. A hand-edit, a sync conflict, or
+a schema written by a future version can put any shape in it.
 
-The vault is consulted, never mirrored: whenever the plugin needs to know what files exist
-it calls `vault.getMarkdownFiles()` fresh.
+`src/review.ts` — `normalizeState`
 
-## The entry point
+```ts
+export function normalizeState(raw: unknown): PluginState {
+  const data = (typeof raw === "object" && raw !== null ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  const startedAt = data.reviewStartedAt;
 
-`src/main.ts` exists only because Obsidian requires the bundle's default export to come
-from an entry file of that name.
-
-```bash
-cat -n src/main.ts
+  return {
+    schemaVersion:
+      typeof data.schemaVersion === "number" &&
+      Number.isInteger(data.schemaVersion)
+        ? data.schemaVersion
+        : CURRENT_SCHEMA_VERSION,
+    reviewedPaths: new Set(stringArray(data.reviewedPaths)),
+    reviewStartedAt:
+      typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))
+        ? startedAt
+        : undefined,
+    excludedFolders: normalizeFolders(stringArray(data.excludedFolders)),
+    showStatusBar:
+      typeof data.showStatusBar === "boolean" ? data.showStatusBar : true,
+  };
+}
 ```
 
-```output
-     1	// Obsidian's expected entrypoint — the plugin lives in plugin.ts.
-     2	export { default } from "./plugin";
+**It coerces rather than throws, and that is a UX requirement rather than defensiveness.** A
+`data.json` that throws blanks the settings tab — which is the only place the user can repair
+the value that broke it. So every field degrades to its default and the tab still renders.
+
+Two of the five coercions have a specific failure behind them, recorded in the tests:
+
+- `new Set("abc")` yields `{"a","b","c"}` — a string `reviewedPaths` would silently mark three
+  one-character paths as reviewed. `stringArray` returns `[]` for anything that is not an
+  array.
+- `isEligible` calls `excludedFolders.some()`, which sits under the settings tab's statistics.
+  A non-array there used to leave the tab blank.
+
+`schemaVersion` is the field the whole read-only fence turns on, so it gets the strictest
+check. The comment in the source says why:
+
+> The field that decides whether the plugin runs read-only, so it is the last one that should
+> be trusted raw. A numeric string would be coerced by `>` and then stored back as a string;
+> anything non-coercible compares false, disengaging the write fence entirely.
+
+`serialize` is the inverse, and `EMPTY_STATE` is `normalizeState(undefined)` — a fresh install
+and the fallback for an unreadable file are the same value.
+
+### The only way to write an excluded folder
+
+`src/review.ts` — `normalizeFolders`
+
+```ts
+function normalizeFolders(list: readonly string[]): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of list) {
+    const folder = entry.trim().replace(/\/+$/, "");
+    if (!folder || seen.has(folder)) continue;
+    seen.add(folder);
+    normalized.push(folder);
+  }
+  return normalized;
+}
 ```
 
-## The persisted shape (`src/data.ts`)
+Trim, strip trailing slashes, drop empties, dedupe. The reason it must be the only door is
+that the failure is silent: `isEligible` tests for a `${folder}/` prefix, so a stored
+`"Templates/"` produces `"Templates//"` and matches nothing. The user sees the folder listed
+as excluded and its notes keep appearing in review.
 
-Before looking at the plugin class it helps to know exactly what ends up in `data.json`.
-It is five fields, and the file is small enough to take in at once.
+**Three writers go through it** — `setExcludedFolders` (the UI), `normalizeState` (the disk),
+and `renamePath` (vault reconciliation, which maps entries independently and can collide two
+onto one). The docstring lives on the function rather than on any one caller, because the
+function is what the claim is about.
 
-```bash
-cat -n src/data.ts | sed -n '1,23p'
+## Queries
+
+Three, all pure functions of the state.
+
+`src/review.ts` — `isEligible`, `isReviewed`, `stats`
+
+```ts
+export function isEligible(state: PluginState, path: string): boolean {
+  return !state.excludedFolders.some((folder) => path.startsWith(`${folder}/`));
+}
+
+export function isReviewed(state: PluginState, path: string): boolean {
+  return state.reviewedPaths.has(path);
+}
 ```
 
-```output
-     1	export type PluginData = {
-     2	  schemaVersion: number;
-     3	  reviewedPaths: string[];
-     4	  reviewStartedAt?: string;
-     5	  excludedFolders: string[];
-     6	  showStatusBar: boolean;
-     7	};
-     8	
-     9	export const CURRENT_SCHEMA_VERSION = 2;
-    10	
-    11	export const DEFAULT_DATA: PluginData = {
-    12	  schemaVersion: CURRENT_SCHEMA_VERSION,
-    13	  reviewedPaths: [],
-    14	  excludedFolders: [],
-    15	  showStatusBar: true,
-    16	};
-    17	
-    18	export type SavedData = Partial<PluginData>;
-    19	
-    20	function stringArray(value: unknown): string[] {
-    21	  if (!Array.isArray(value)) return [];
-    22	  return value.filter((item): item is string => typeof item === "string");
-    23	}
+The `${folder}/` in `isEligible` is the whole of the prefix-boundary rule, and it is tested
+from both sides: `templates` excludes `templates/sub/note.md` and must _not_ exclude
+`templates-extra/note.md`.
+
+## Transitions
+
+Every change to the document is a pure function from one state to the next. The signature is
+uniform — state in, state out — and the header comment states the contract that makes the
+rest of the system work:
+
+`src/review.ts` — the transitions section
+
+```ts
+// --- transitions -----------------------------------------------------------
+// Each returns the next state, or `state` itself when nothing changed.
 ```
 
-`reviewedPaths` is the whole state of a review; `reviewStartedAt` is an ISO timestamp set on
-the first mark and cleared on reset; `excludedFolders` is configuration; `showStatusBar` is a
-display preference. `schemaVersion` is not a migration hook — as we will see in
-`loadSettings`, it is a fence that stops a newer plugin's file from being overwritten by an
-older build.
+### Reference equality is the "nothing happened" signal
 
-Everything read out of `data.json` goes through `normalizeData` first. The docstring says
-why, and it is worth reading rather than skimming: the file is hand-editable and
-sync-editable, and a spread would happily overwrite a well-typed default with a wrong-typed
-value.
+This is the least obvious idea in the codebase and everything downstream leans on it. A
+transition that changes nothing returns **the same object**, not an equal one. Callers test
+with `===`.
 
-```bash
-cat -n src/data.ts | sed -n '25,51p'
+`src/review.ts` — `markUnreviewed`
+
+```ts
+export function markUnreviewed(state: PluginState, path: string): PluginState {
+  if (!state.reviewedPaths.has(path)) return state;
+
+  const reviewedPaths = new Set(state.reviewedPaths);
+  reviewedPaths.delete(path);
+  return { ...state, reviewedPaths };
+}
 ```
 
-```output
-    25	/**
-    26	 * `data.json` is the least trustworthy thing the plugin reads: a hand-edit, a
-    27	 * sync conflict, or a schema written by a future version can put any shape in
-    28	 * it, and a spread happily overwrites a well-typed default with a wrong-typed
-    29	 * value. Coerce rather than throw — a bad field must degrade to its default so
-    30	 * the settings tab still renders and the user can repair it from the UI.
-    31	 */
-    32	export function normalizeData(raw: unknown): Omit<PluginData, "schemaVersion"> {
-    33	  const data = (typeof raw === "object" && raw !== null ? raw : {}) as Record<
-    34	    string,
-    35	    unknown
-    36	  >;
-    37	  const startedAt = data.reviewStartedAt;
-    38	
-    39	  return {
-    40	    reviewedPaths: stringArray(data.reviewedPaths),
-    41	    reviewStartedAt:
-    42	      typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))
-    43	        ? startedAt
-    44	        : undefined,
-    45	    excludedFolders: stringArray(data.excludedFolders),
-    46	    showStatusBar:
-    47	      typeof data.showStatusBar === "boolean"
-    48	        ? data.showStatusBar
-    49	        : DEFAULT_DATA.showStatusBar,
-    50	  };
-    51	}
+Transcript of a script run against the real module while writing this document — not a live
+block, and nothing re-runs it:
+
+```text
+markReviewed(s1, "a.md")  already reviewed   SAME ref  (no write)
+markReviewed(s1, "b.md")  new path           new ref   (writes)
+markUnreviewed(s1, "zz.md")  not reviewed    SAME ref  (no write)
+setExcludedFolders(s1, ["Templates/"])       SAME ref  (no write)
+setExcludedFolders(s1, [" Templates ", ""])  SAME ref  (no write)
+renamePath(s1, "Other", "X", true)  no match SAME ref  (no write)
+renamePath(s1, "Templates", "Meta", true)    new ref   (writes)
+removePath(s1, "Other", true)  no match      SAME ref  (no write)
+reset(EMPTY_STATE)  nothing to clear         SAME ref  (no write)
+reset(s1)  has progress                      new ref   (writes)
 ```
 
-Two details to carry forward. `Date.parse` is what validates `reviewStartedAt`, so
-`"2026-03-23"` survives but `"yesterday"` and a numeric epoch do not. And the return type is
-`Omit<PluginData, "schemaVersion">` — `schemaVersion` is deliberately *not* normalized here;
-`plugin.ts` reads it straight off the raw object.
+Rows four and five are the interesting ones. `setExcludedFolders(s1, ["Templates/"])` returns
+the same reference because the input _normalizes to_ what is already stored — the comparison
+happens after normalization, not before. That is what stops a keystroke that changes nothing
+meaningful from queueing a write of the entire reviewed-path set.
 
-## The domain logic (`src/review.ts`)
+### The review clock
 
-`Review` owns every persisted review field and imports nothing. Above it sits the one free
-function in the module.
+`src/review.ts` — `markReviewed`
 
-```bash
-cat -n src/review.ts | sed -n '1,14p'
+```ts
+export function markReviewed(
+  state: PluginState,
+  path: string,
+  now: () => string = () => new Date().toISOString(),
+): PluginState {
+  if (state.reviewedPaths.has(path) && state.reviewStartedAt) return state;
+
+  return {
+    ...state,
+    reviewedPaths: new Set(state.reviewedPaths).add(path),
+    reviewStartedAt: state.reviewStartedAt ?? now(),
+  };
+}
 ```
 
-```output
-     1	/** Uniform choice, or undefined when there is nothing to choose from. */
-     2	export function pickRandom<T>(
-     3	  items: readonly T[],
-     4	  rng: () => number = Math.random,
-     5	): T | undefined {
-     6	  if (!items.length) return undefined;
-     7	  return items[Math.floor(rng() * items.length)];
-     8	}
-     9	
-    10	export type ReviewStats = {
-    11	  reviewed: number;
-    12	  eligible: number;
-    13	  percentCompleted: number;
-    14	};
+`reviewStartedAt` is set on the first mark and never again — `??` keeps an existing value. The
+clock survives an unmark, which is what the settings tab's "Review started on …" line reports.
+
+`now` is injected so the tests can pass a sentinel. It is the only injection seam left in the
+domain module, and it earns its place because the alternative is asserting on a real clock.
+
+Note the guard needs both conditions. A path can already be in the set while `reviewStartedAt`
+is still undefined — that is what a `data.json` carrying paths but no timestamp looks like —
+and in that case the transition must still run to set the clock.
+
+### Reconciling with the vault
+
+This is where the organising decision comes due. When the vault moves a folder, every stored
+path under it is now wrong, and so is any excluded folder under it.
+
+`src/review.ts` — `renamePath`, the folder branch
+
+```ts
+  const oldPrefix = `${oldPath}/`;
+  const newPrefix = `${newPath}/`;
+  let changed = false;
+
+  const reviewedPaths = new Set<string>();
+  for (const p of state.reviewedPaths) {
+    if (p.startsWith(oldPrefix)) {
+      reviewedPaths.add(newPrefix + p.slice(oldPrefix.length));
+      changed = true;
+    } else {
+      reviewedPaths.add(p);
+    }
+  }
+
+  // The excluded folder itself, and any excluded folder beneath it.
+  const excludedFolders = normalizeFolders(
+    state.excludedFolders.map((folder) => {
+      if (folder === oldPath) {
+        changed = true;
+        return newPath;
+      }
+      if (folder.startsWith(oldPrefix)) {
+        changed = true;
+        return newPrefix + folder.slice(oldPrefix.length);
+      }
+      return folder;
+    }),
+  );
+
+  return changed ? { ...state, reviewedPaths, excludedFolders } : state;
 ```
 
-The `rng` parameter defaults to `Math.random` and exists so the tests can pin the choice —
-the same trick `markReviewed` uses for the clock. Returning `undefined` rather than throwing
-on an empty list pushes the "nothing to pick" decision up to the caller, which turns out to
-matter: the caller distinguishes *no eligible files* from *nothing left unreviewed*, and
-says different things about each.
+Three cases, and the middle one is the one that was missed once and had to be fixed: the
+renamed folder may _be_ an excluded folder (`folder === oldPath`), or may _contain_ one
+(`folder.startsWith(oldPrefix)`). Excluding `Templates` and then moving it to
+`Meta/Templates` used to silently un-exclude everything in it while the settings tab went on
+listing the old path.
 
-Now the class itself.
+The `normalizeFolders` wrapper around the `.map` is the dedupe: because entries are mapped
+independently, renaming `B` onto an existing `A` produces `["A", "A"]` without it.
 
-```bash
-cat -n src/review.ts | sed -n '16,41p'
+`removePath` has the same shape and does the opposite — it drops matching reviewed paths and
+filters out the excluded folder and its descendants. The two are deliberately _not_ collapsed
+into one parameterised function; they share a shape and do opposite things, and merging them
+would mean a flag parameter.
+
+## The store
+
+`src/store.ts` owns the document, the write fence and the write queue. It is Obsidian-free,
+which is the point.
+
+### Injected dependencies
+
+`src/store.ts` — `StoreDeps`
+
+```ts
+export type StoreDeps = {
+  load: () => Promise<unknown>;
+  save: (data: PluginData) => Promise<void>;
+  notify: (message: string) => void;
+  log: (message: string, err?: unknown) => void;
+  warn: (message: string) => void;
+  /** Called whenever `state` is replaced, so the UI can repaint. */
+  onChange?: () => void;
+};
 ```
 
-```output
-    16	/**
-    17	 * Every persisted review field under one owner, free of Obsidian APIs so it can
-    18	 * be tested directly. The plugin owns one instance, feeds it persisted data via
-    19	 * load(), and reads the fields back out when saving.
-    20	 *
-    21	 * The vault is the source of truth for what exists, so rename()/remove()
-    22	 * reconcile the stored paths against it rather than maintaining an
-    23	 * authoritative file list. That reconciliation covers excludedFolders too — it
-    24	 * lives here for exactly that reason.
-    25	 */
-    26	export class Review {
-    27	  reviewedPaths = new Set<string>();
-    28	  reviewStartedAt?: string;
-    29	  excludedFolders: string[] = [];
-    30	
-    31	  load(paths: string[], excludedFolders: string[], startedAt?: string): void {
-    32	    this.reviewedPaths = new Set(paths);
-    33	    this.excludedFolders = [...excludedFolders];
-    34	    this.reviewStartedAt = startedAt;
-    35	  }
-    36	
-    37	  isEligible(path: string): boolean {
-    38	    return !this.excludedFolders.some((folder) =>
-    39	      path.startsWith(`${folder}/`),
-    40	    );
-    41	  }
-```
+`loadData` and `saveData` are two functions. Taken as functions rather than inherited from a
+`Plugin` subclass, the entire save path becomes ordinary testable code — a test binds `save`
+to something that throws and can then assert what happens to a user whose disk is full, which
+is precisely the user the fence exists for and the one no test could previously represent.
 
-`load` replaces state wholesale rather than merging — it is used both for the initial load
-and for the rollback path in `plugin.ts`, and both need a clean overwrite.
-
-`isEligible` is the entire eligibility rule. Note the trailing slash in `${folder}/`: it is
-what stops an exclusion of `templates` from also excluding `templates-extra/note.md`, and it
-means a root-level file can never be excluded because no prefix can match. There is a test
-for each of those.
-
-Excluded folders have exactly one writer, and the comment explains why concentrating the
-normalization there is load-bearing rather than tidy.
-
-```bash
-cat -n src/review.ts | sed -n '43,58p'
-```
-
-```output
-    43	  /**
-    44	   * The only way in. A folder that is not trimmed of whitespace or trailing
-    45	   * slashes matches nothing, silently, so normalizing anywhere but here would
-    46	   * leave a way to store one.
-    47	   */
-    48	  setExcludedFolders(list: string[]): void {
-    49	    const normalized: string[] = [];
-    50	    const seen = new Set<string>();
-    51	    for (const entry of list) {
-    52	      const folder = entry.trim().replace(/\/+$/, "");
-    53	      if (!folder || seen.has(folder)) continue;
-    54	      seen.add(folder);
-    55	      normalized.push(folder);
-    56	    }
-    57	    this.excludedFolders = normalized;
-    58	  }
-```
-
-`entry.trim().replace(/\/+$/, "")` handles the two ways a hand-typed folder goes wrong —
-stray whitespace and a trailing slash — and the `seen` set collapses entries that normalize
-to the same folder. An entry that survives all that but is empty is dropped, which is why
-`"/"` disappears entirely.
-
-The mutators are unremarkable except for one thing: the review clock starts on the *first*
-mark and is never restarted by a later one.
-
-```bash
-cat -n src/review.ts | sed -n '60,91p'
-```
-
-```output
-    60	  isReviewed(path: string): boolean {
-    61	    return this.reviewedPaths.has(path);
-    62	  }
-    63	
-    64	  markReviewed(
-    65	    path: string,
-    66	    now: () => string = () => new Date().toISOString(),
-    67	  ): void {
-    68	    this.reviewedPaths.add(path);
-    69	    if (!this.reviewStartedAt) this.reviewStartedAt = now();
-    70	  }
-    71	
-    72	  markUnreviewed(path: string): void {
-    73	    this.reviewedPaths.delete(path);
-    74	  }
-    75	
-    76	  reset(): void {
-    77	    this.reviewedPaths.clear();
-    78	    this.reviewStartedAt = undefined;
-    79	  }
-    80	
-    81	  stats(eligible: string[]): ReviewStats {
-    82	    const reviewed = eligible.filter((p) => this.reviewedPaths.has(p)).length;
-    83	    const eligibleCount = eligible.length;
-    84	    return {
-    85	      reviewed,
-    86	      eligible: eligibleCount,
-    87	      percentCompleted: eligibleCount
-    88	        ? Math.round((reviewed / eligibleCount) * 100)
-    89	        : 0,
-    90	    };
-    91	  }
-```
-
-`reset()` clears the paths and the clock but leaves `excludedFolders` alone — starting a new
-sweep does not discard your configuration.
-
-`stats()` takes the eligible list as an argument rather than computing it, because computing
-it requires the vault and `Review` cannot see the vault. That signature also has a quiet
-consequence: it *intersects*. A path that was marked reviewed and later fell into an
-excluded folder stays in `reviewedPaths` but is not counted, so stale entries are invisible
-rather than wrong.
-
-## Reconciling with the vault
-
-This is the part that pays for "the vault is the source of truth". When a file or folder
-moves or disappears, the stored paths have to follow. `rename` and `remove` dispatch on a
-plain boolean — the `TFolder` check happens on the Obsidian side of the boundary.
-
-```bash
-cat -n src/review.ts | sed -n '93,105p'
-```
-
-```output
-    93	  rename(oldPath: string, newPath: string, isFolder: boolean): boolean {
-    94	    if (!isFolder) {
-    95	      if (!this.reviewedPaths.has(oldPath)) return false;
-    96	      this.reviewedPaths.delete(oldPath);
-    97	      this.reviewedPaths.add(newPath);
-    98	      return true;
-    99	    }
-   100	    return this.renameFolder(oldPath, newPath);
-   101	  }
-   102	
-   103	  remove(path: string, isFolder: boolean): boolean {
-   104	    return isFolder ? this.removeFolder(path) : this.reviewedPaths.delete(path);
-   105	  }
-```
-
-The file case returns `false` when there is nothing to do, and every caller uses that return
-value to decide whether a save is even needed. The folder cases are where the real work is.
-
-```bash
-cat -n src/review.ts | sed -n '107,136p'
-```
-
-```output
-   107	  private renameFolder(oldPath: string, newPath: string): boolean {
-   108	    const oldPrefix = `${oldPath}/`;
-   109	    const newPrefix = `${newPath}/`;
-   110	    let changed = false;
-   111	
-   112	    const moved: string[] = [];
-   113	    for (const p of this.reviewedPaths) {
-   114	      if (p.startsWith(oldPrefix)) {
-   115	        this.reviewedPaths.delete(p);
-   116	        moved.push(newPrefix + p.slice(oldPrefix.length));
-   117	        changed = true;
-   118	      }
-   119	    }
-   120	    for (const p of moved) this.reviewedPaths.add(p);
-   121	
-   122	    // The excluded folder itself, and any excluded folder beneath it.
-   123	    this.excludedFolders = this.excludedFolders.map((folder) => {
-   124	      if (folder === oldPath) {
-   125	        changed = true;
-   126	        return newPath;
-   127	      }
-   128	      if (folder.startsWith(oldPrefix)) {
-   129	        changed = true;
-   130	        return newPrefix + folder.slice(oldPrefix.length);
-   131	      }
-   132	      return folder;
-   133	    });
-   134	
-   135	    return changed;
-   136	  }
-```
-
-Two things here reward a second look.
-
-The rewritten paths are collected into `moved` and added *after* the loop finishes. Deleting
-from a `Set` while iterating it is safe in JavaScript, but adding is not — a newly added
-entry can be visited by the same iteration. Since a rename can produce a path that also
-starts with `oldPrefix` (renaming `a` to `a/b`, say), buffering is the difference between
-correct and an infinite loop.
-
-The `excludedFolders` rewrite is the fix for a real bug, and the test that guards it names
-the issue.
-
-```bash
-cat -n src/review.test.ts | sed -n '182,189p'
-```
-
-```output
-   182	  // #80: excluding Templates then moving it silently un-excluded everything
-   183	  // in it, while the settings tab went on listing the old path.
-   184	  test("rewrites the excluded folder itself", () => {
-   185	    const review = reviewWith([], ["Templates"]);
-   186	    expect(review.rename("Templates", "Meta/Templates", true)).toBe(true);
-   187	    expect(review.excludedFolders).toEqual(["Meta/Templates"]);
-   188	    expect(review.isEligible("Meta/Templates/note.md")).toBe(false);
-   189	  });
-```
-
-Deletion is the same shape, minus the rewriting.
-
-```bash
-cat -n src/review.ts | sed -n '138,158p'
-```
-
-```output
-   138	  private removeFolder(folderPath: string): boolean {
-   139	    const prefix = `${folderPath}/`;
-   140	    let changed = false;
-   141	
-   142	    for (const p of this.reviewedPaths) {
-   143	      if (p.startsWith(prefix)) {
-   144	        this.reviewedPaths.delete(p);
-   145	        changed = true;
-   146	      }
-   147	    }
-   148	
-   149	    const kept = this.excludedFolders.filter(
-   150	      (folder) => folder !== folderPath && !folder.startsWith(prefix),
-   151	    );
-   152	    if (kept.length !== this.excludedFolders.length) {
-   153	      this.excludedFolders = kept;
-   154	      changed = true;
-   155	    }
-   156	
-   157	    return changed;
-   158	  }
-```
-
-## The plugin class (`src/plugin.ts`)
-
-Everything Obsidian-facing lives here. The class fields are worth reading before any method,
-because two of them are the persistence machinery the rest of the file is built around.
-
-```bash
-cat -n src/plugin.ts | sed -n '19,44p'
-```
-
-```output
-    19	export default class ReviewPlugin extends Plugin {
-    20	  data!: PluginData;
-    21	  readonly review = new Review();
-    22	  statusBar!: StatusBar;
-    23	
-    24	  /**
-    25	   * Why writing is refused, or null when it is allowed. Set on every path
-    26	   * through loadSettings: data we failed to read must not be overwritten by
-    27	   * the defaults we fell back to, and data from a newer plugin version must
-    28	   * not be truncated to what this version understands.
-    29	   */
-    30	  private saveBlocked: string | null = null;
-    31	
-    32	  /** Tail of the serialized write queue. Never rejects. */
-    33	  private savePending: Promise<void> = Promise.resolve();
-    34	
-    35	  /**
-    36	   * Fire-and-forget bridge for UI callbacks that cannot await: surfaces
-    37	   * rejections via Notice instead of letting them vanish.
-    38	   */
-    39	  runAsync = (promise: Promise<unknown>, label: string) => {
-    40	    promise.catch((err) => {
-    41	      console.error(`[review] ${label} failed`, err);
-    42	      new Notice(`Review: ${label} failed — see console for details.`);
-    43	    });
-    44	  };
-```
-
-`saveBlocked` is a write fence: non-null means "refuse to write", and the string it holds is
-the reason, shown to the user verbatim. `savePending` is the tail of a promise chain that
-serializes writes. `runAsync` exists because Obsidian's callbacks are synchronous and cannot
-await — without it a rejected save would vanish into an unhandled rejection and the user
-would never learn their progress was not recorded.
-
-`onload` is the registration surface. It loads settings first, because everything else needs
-`this.data`.
-
-```bash
-cat -n src/plugin.ts | sed -n '46,68p'
-```
-
-```output
-    46	  onload = async () => {
-    47	    await this.loadSettings();
-    48	
-    49	    this.addRibbonIcon("scan-eye", "Open review", () => {
-    50	      this.openReviewMenu();
-    51	    });
-    52	
-    53	    this.statusBar = new StatusBar(this.addStatusBarItem(), this);
-    54	
-    55	    this.addCommand({
-    56	      id: "open-random-unreviewed",
-    57	      name: "Open random unreviewed file",
-    58	      callback: () => this.runAsync(this.openRandomFile(), "open random file"),
-    59	    });
-    60	    this.addCommand({
-    61	      id: "mark-reviewed",
-    62	      name: "Mark file as reviewed",
-    63	      checkCallback: (checking) => {
-    64	        if (this.getActiveFileStatus() !== "not_reviewed") return false;
-    65	        if (!checking) this.runAsync(this.markReviewed(), "mark reviewed");
-    66	        return true;
-    67	      },
-    68	    });
-```
-
-The `checkCallback` pattern is Obsidian's way of conditionally hiding a command from the
-palette: returning `false` when `checking` is true removes it from the list. All three
-mutating commands gate on `getActiveFileStatus()`, so "Mark file as reviewed" simply is not
-offered for a file that is already reviewed, is not markdown, or sits in an excluded folder.
-
-The rest of `onload` wires the settings tab and the two vault events that keep stored paths
-honest.
-
-```bash
-cat -n src/plugin.ts | sed -n '94,115p'
-```
-
-```output
-    94	    this.addSettingTab(new ReviewSettingTab(this.app, this));
-    95	
-    96	    this.registerEvent(
-    97	      this.app.vault.on("rename", (file, oldPath) =>
-    98	        this.runAsync(
-    99	          this.handleFileRename(file, oldPath),
-   100	          "update review state after rename",
-   101	        ),
-   102	      ),
-   103	    );
-   104	    this.registerEvent(
-   105	      this.app.vault.on("delete", (file) =>
-   106	        this.runAsync(
-   107	          this.handleFileDelete(file),
-   108	          "update review state after delete",
-   109	        ),
-   110	      ),
-   111	    );
-   112	    this.registerEvent(
-   113	      this.app.workspace.on("file-open", this.statusBar.update),
-   114	    );
-   115	  };
-```
-
-`registerEvent` hands the subscription to Obsidian's lifecycle so it is torn down on unload.
-Both handlers are wrapped in `runAsync` because `vault.on` callbacks are synchronous.
+`onChange` is a state-change notification, not a UI hook. The store never knows what repaints.
 
 ### Loading, and the write fence
 
-`loadSettings` is longer than it looks like it should be, and every branch is load-bearing.
+`src/store.ts` — `readFromDisk`
 
-```bash
-cat -n src/plugin.ts | sed -n '117,148p'
+```ts
+    const normalized = normalizeState(raw);
+    const savedVersion = normalized.schemaVersion;
+    const isNewer = savedVersion > CURRENT_SCHEMA_VERSION;
+    ...
+    // Keep a newer version's number, so the file is not truncated to v2
+    // if something later lifts the write block.
+    this.state = {
+      ...normalized,
+      schemaVersion: isNewer ? savedVersion : CURRENT_SCHEMA_VERSION,
+    };
+
+    // Assigned on every path, back to null included, so a reload after a
+    // transient read failure lifts the block.
+    if (loadFailed) {
+      this.blocked = "saved data could not be read";
+    } else if (isNewer) {
+      this.blocked = "saved data is from a newer plugin version";
+    } else {
+      this.blocked = null;
+    }
 ```
 
-```output
-   117	  loadSettings = async () => {
-   118	    let saved: SavedData | null = null;
-   119	    let loadFailed = false;
-   120	    try {
-   121	      saved = await this.loadData();
-   122	    } catch (err) {
-   123	      // Distinct from `saved === null`, which is also a fresh install.
-   124	      loadFailed = true;
-   125	      console.error("[review] loadData failed; running read-only", err);
-   126	      new Notice(
-   127	        "Review: could not read saved data. The plugin is read-only until Obsidian reloads it — your saved review will not be overwritten. See console for details.",
-   128	      );
-   129	    }
-   130	
-   131	    const savedVersion = saved?.schemaVersion ?? CURRENT_SCHEMA_VERSION;
-   132	    const isNewer = savedVersion > CURRENT_SCHEMA_VERSION;
-   133	
-   134	    if (isNewer) {
-   135	      console.warn(
-   136	        `[review] data has schema v${savedVersion}, newer than v${CURRENT_SCHEMA_VERSION}; loading read-only`,
-   137	      );
-   138	      new Notice(
-   139	        "Review: saved data is from a newer plugin version. Changes will not be saved until the plugin is updated.",
-   140	      );
-   141	    }
-   142	
-   143	    this.data = {
-   144	      ...normalizeData(saved),
-   145	      // Keep a newer version's number, so the file is not truncated to v2
-   146	      // if something later lifts the write block.
-   147	      schemaVersion: isNewer ? savedVersion : CURRENT_SCHEMA_VERSION,
-   148	    };
+Two independent reasons to refuse writes, and they protect different things.
+
+**A read that failed** must not be overwritten by the defaults it fell back to. If `loadData`
+throws, the state is `EMPTY_STATE` — and saving that would destroy a review the plugin simply
+could not read this time.
+
+**Data from a newer schema** must not be truncated to what this version understands. A future
+version writing `schemaVersion: 3` with fields this build does not know about would lose them
+on the next save.
+
+Three details are easy to break and each has a reason:
+
+- `loadFailed` is a separate flag from `raw === null`, because `null` is also what a fresh
+  install looks like.
+- The newer version's _number_ is preserved rather than stamped down to 2.
+- `blocked` is assigned on **every** path, `null` included, so reloading after a transient
+  read failure lifts the fence rather than latching it forever.
+
+### One queue for everything
+
+`src/store.ts` — `enqueue` and `reload`
+
+```ts
+  private enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = this.pending.then(fn);
+    this.pending = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  };
+
+  reload = (): Promise<void> => this.enqueue(this.readFromDisk);
 ```
 
-Two failure modes, deliberately kept apart. `loadData` *throwing* means there is a file we
-could not read; `loadData` returning `null` means a fresh install. Both leave `saved` falsy,
-which is why the separate `loadFailed` flag exists — the comment on line 123 is there
-because collapsing them would be an easy and destructive "simplification".
+Six lines, and three properties fall out of them.
 
-The schema check compares against `CURRENT_SCHEMA_VERSION`, which is `2`. This is the fence
-mentioned earlier: newer data is loaded read-only rather than migrated or refused, and line
-147 keeps the newer version number so that if the block is ever lifted the file is not
-stamped back down to 2.
+**Order.** Work runs in call order, because each new task chains onto the tail.
 
-The tail sets the fence and hands the loaded values to `Review`.
+**A failure cannot stop a successor.** The tail is `run.then(noop, noop)`, so `pending` never
+rejects — which is also why one arm suffices where a two-armed `.then(f, f)` might look
+necessary.
 
-```bash
-cat -n src/plugin.ts | sed -n '150,165p'
+**Reloads are ordered against writes.** `reload` joins the same queue as `commit`. Without
+that, a save requested before a sync-triggered reload could land _after_ it and overwrite the
+state just adopted from disk.
+
+### Commit, which is the whole design in one function
+
+`src/store.ts` — `commit`
+
+```ts
+  commit = (apply: (state: PluginState) => PluginState): Promise<boolean> =>
+    this.enqueue(async () => {
+      if (this.blocked) {
+        this.deps.notify(
+          `Review: ${this.blocked}. Changes will not be saved until you reload.`,
+        );
+        return false;
+      }
+
+      const next = apply(this.state);
+      if (next === this.state) return true;
+
+      const payload = serialize(next);
+      try {
+        await this.deps.save(payload);
+      } catch (err) {
+        this.deps.log(
+          `saveData failed (${payload.reviewedPaths.length} reviewed paths, ${payload.excludedFolders.length} excluded folders)`,
+          err,
+        );
+        this.deps.notify(
+          "Review: could not save your review — see console for details.",
+        );
+        return false;
+      }
+
+      this.state = next;
+      this.deps.onChange?.();
+      return true;
+    });
 ```
 
-```output
-   150	    // Assigned on every path, back to null included, so a reload after a
-   151	    // transient read failure lifts the block.
-   152	    if (loadFailed) {
-   153	      this.saveBlocked = "saved data could not be read";
-   154	    } else if (isNewer) {
-   155	      this.saveBlocked = "saved data is from a newer plugin version";
-   156	    } else {
-   157	      this.saveBlocked = null;
-   158	    }
-   159	
-   160	    this.review.load(
-   161	      this.data.reviewedPaths,
-   162	      this.data.excludedFolders,
-   163	      this.data.reviewStartedAt,
-   164	    );
-   165	  };
+Read it in order, because each line is load-bearing:
+
+1. **The fence is checked inside the critical section.** Not before entering it — a refusal
+   arriving while the call was waiting its turn would otherwise slip past a check that had
+   already passed.
+2. **The transition runs inside the queue too.** So it computes from whatever the previous
+   commit actually persisted. Two overlapping commits compose instead of racing.
+3. **`next === this.state` short-circuits.** The reference-equality signal, cashed in: a
+   transition that changed nothing writes nothing and still reports success.
+4. **The write happens before the state moves.**
+5. **State is replaced only after the write resolves** — so a failure needs no undo. There is
+   no rollback here because nothing was applied speculatively.
+6. **`onChange` fires last**, so the UI repaints against what is on disk.
+
+`commit` returns `false` for both a refusal and an I/O failure rather than rejecting. The
+caller's question is "is this on disk?", and both answers are no. A transition that _throws_
+is a programming error and propagates — `apply` sits outside the `try`, deliberately.
+
+The visible consequence: the status bar repaints _after_ `saveData` resolves rather than
+optimistically, so on a slow or synced disk there is a click-to-repaint delay of one write.
+That is the honest reading of "the UI must not show progress that is not on disk".
+
+## The plugin
+
+`src/main.ts` is the Obsidian adapter. It is named for the bundle Obsidian loads, so there is
+no re-export shim.
+
+### Binding the store to Obsidian
+
+`src/main.ts` — `ReviewPlugin.store` and `state`
+
+```ts
+  readonly store = new Store({
+    load: () => this.loadData(),
+    save: (data) => this.saveData(data),
+    notify: (message) => new Notice(message),
+    log: (message, err) => console.error(`[review] ${message}`, err),
+    warn: (message) => console.warn(`[review] ${message}`),
+    onChange: () => this.statusBar?.update(),
+  });
+
+  /** The persisted document. Read-only here; the store owns replacement. */
+  get state(): PluginState {
+    return this.store.state;
+  }
 ```
 
-Note the assignment on *every* path, including back to `null`. A transient read failure is
-lifted by the next successful load rather than sticking for the session.
+Six one-line adapters. The `?.` on `statusBar` matters: `onChange` can fire during `onload`,
+before the status bar has been constructed.
 
-### Saving
+`state` is a getter with no setter, so no UI module can assign to it even by accident.
 
-`saveSettings` is the only path to disk, and it does three distinct jobs.
+### The async bridge
 
-```bash
-cat -n src/plugin.ts | sed -n '167,197p'
+`src/main.ts` — `runAsync`
+
+```ts
+  runAsync = (promise: Promise<unknown>, label: string) => {
+    promise.catch((err) => {
+      console.error(`[review] ${label} failed`, err);
+      new Notice(`Review: ${label} failed — see console for details.`);
+    });
+  };
 ```
 
-```output
-   167	  saveSettings = (): Promise<void> => {
-   168	    if (this.saveBlocked) {
-   169	      console.warn(`[review] not saving: ${this.saveBlocked}`);
-   170	      new Notice(
-   171	        `Review: ${this.saveBlocked}. Changes will not be saved until you reload.`,
-   172	      );
-   173	      return Promise.resolve();
-   174	    }
-   175	
-   176	    this.data.reviewedPaths = [...this.review.reviewedPaths];
-   177	    this.data.excludedFolders = [...this.review.excludedFolders];
-   178	    this.data.reviewStartedAt = this.review.reviewStartedAt;
-   179	
-   180	    // Snapshot at call time, not write time: a queued write must carry the
-   181	    // state that was current when it was requested, not whatever `this.data`
-   182	    // holds by the time its turn comes.
-   183	    const payload: PluginData = {
-   184	      ...this.data,
-   185	      reviewedPaths: [...this.data.reviewedPaths],
-   186	      excludedFolders: [...this.data.excludedFolders],
-   187	    };
-   188	
-   189	    // Serialize, so overlapping saves land in call order. Both arms run the
-   190	    // write: a failed predecessor must not stop its successor.
-   191	    const next = this.savePending.then(
-   192	      () => this.writeSettings(payload),
-   193	      () => this.writeSettings(payload),
-   194	    );
-   195	    this.savePending = next.catch(() => {});
-   196	    return next;
-   197	  };
+Obsidian's callbacks are synchronous and cannot await. Without this, a rejected promise from a
+command handler vanishes with no console line and no user-visible sign. Every fire-and-forget
+call site goes through it and passes a label that names the action in plain words.
+
+### Registration
+
+`src/main.ts` — `onload`
+
+```ts
+  onload = async () => {
+    await this.loadSettings();
+
+    this.addRibbonIcon("scan-eye", "Open review", () => {
+      this.openReviewMenu();
+    });
+
+    this.statusBar = new StatusBar(this.addStatusBarItem(), this);
+
+    for (const command of COMMANDS) {
+      this.addCommand({
+        id: command.id,
+        name: command.name,
+        ...(command.availableWhen
+          ? {
+              checkCallback: (checking: boolean) => {
+                if (this.getActiveFileStatus() !== command.availableWhen)
+                  return false;
+                if (!checking) this.runAsync(command.run(this), command.label);
+                return true;
+              },
+            }
+          : {
+              callback: () => this.runAsync(command.run(this), command.label),
+            }),
+      });
+    }
 ```
 
-Reading it in order: check the fence and bail; copy `Review`'s state into `this.data`; deep-
-copy that into an immutable `payload`; append the write to the chain.
+The load comes first, so nothing renders against `EMPTY_STATE`.
 
-The two identical arms on line 191-193 look like a mistake and are not — `then(onFulfilled,
-onRejected)` with the same function in both positions means "run regardless of whether the
-predecessor succeeded". The line below re-tails the chain with `.catch(() => {})` so
-`savePending` itself never rejects, while `next` — the promise the caller gets — still does.
+The registration loop is the interesting part. Obsidian has two different command shapes —
+`callback` for always-available, `checkCallback` for conditional — and the spread picks one
+based on whether the table entry carries an `availableWhen`. `checkCallback` is called twice
+per invocation: once with `checking: true` to ask whether to show the command at all, then
+again with `false` to run it.
 
-`writeSettings` is the only place `saveData` is called, and it exists so the failure log can
-say how much data was at stake.
-
-```bash
-cat -n src/plugin.ts | sed -n '199,214p'
-```
-
-```output
-   199	  private writeSettings = async (data: PluginData) => {
-   200	    try {
-   201	      await this.saveData(data);
-   202	    } catch (err) {
-   203	      console.error(
-   204	        `[review] saveData failed (${data.reviewedPaths.length} reviewed paths, ${data.excludedFolders.length} excluded folders)`,
-   205	        err,
-   206	      );
-   207	      throw err;
-   208	    }
-   209	  };
-   210	
-   211	  onExternalSettingsChange = async () => {
-   212	    await this.loadSettings();
-   213	    this.statusBar.update();
-   214	  };
-```
-
-`onExternalSettingsChange` is Obsidian's hook for "another process rewrote `data.json`" —
-the sync case. It re-reads and repaints, which also re-evaluates the fence.
+`open-review-menu` is registered separately, outside the loop. It is the one command that
+opens UI rather than changing review state, so it has no `run(plugin)` and no availability
+rule.
 
 ### Reading the current state
 
-A short block of queries sits between the persistence machinery and the actions. Every one
-of them consults the vault rather than any stored file list.
+`src/main.ts` — `getActiveFileStatus`
 
-```bash
-cat -n src/plugin.ts | sed -n '216,244p'
+```ts
+  getActiveFileStatus = (): "reviewed" | "not_reviewed" | undefined => {
+    const file = this.getActiveMarkdownFile();
+    if (!file || !isEligible(this.state, file.path)) return undefined;
+    return isReviewed(this.state, file.path) ? "reviewed" : "not_reviewed";
+  };
 ```
 
-```output
-   216	  getActiveMarkdownFile = (): TFile | null => {
-   217	    const activeFile = this.app.workspace.getActiveFile();
-   218	    if (activeFile?.extension !== "md") return null;
-   219	    return activeFile;
-   220	  };
-   221	
-   222	  isFileEligible = (path: string): boolean => {
-   223	    return this.review.isEligible(path);
-   224	  };
-   225	
-   226	  getEligibleFiles = (): TFile[] => {
-   227	    return this.app.vault
-   228	      .getMarkdownFiles()
-   229	      .filter((f) => this.isFileEligible(f.path));
-   230	  };
-   231	
-   232	  getActiveFileStatus = (): "reviewed" | "not_reviewed" | undefined => {
-   233	    const file = this.getActiveMarkdownFile();
-   234	    if (!file || !this.isFileEligible(file.path)) return undefined;
-   235	    return this.isReviewed(file.path) ? "reviewed" : "not_reviewed";
-   236	  };
-   237	
-   238	  isReviewed = (path: string): boolean => {
-   239	    return this.review.isReviewed(path);
-   240	  };
-   241	
-   242	  getStats = (): ReviewStats => {
-   243	    return this.review.stats(this.getEligibleFiles().map((f) => f.path));
-   244	  };
-```
-
-`getActiveFileStatus` is the one to remember. It has three results, not two, and `undefined`
-means "this file is outside the review" — non-markdown, or in an excluded folder. The status
-bar hides itself on `undefined`, the commands hide themselves, and the menu modal offers a
-shorter list. Every consumer of "is this file reviewed?" goes through this function rather
-than asking `Review` directly, so the eligibility check can never be skipped by accident.
+Three states, not two, and `undefined` is doing real work: it means "there is nothing here to
+review" — no active file, not markdown, or excluded. Every surface branches on this same
+value, which is why the status bar, the command palette and the review menu agree without
+coordinating.
 
 ### Actions
 
-Opening a random file is where `pickRandom`'s `undefined` return pays off.
+`src/main.ts` — `markReviewed`
 
-```bash
-cat -n src/plugin.ts | sed -n '250,270p'
+```ts
+  markReviewed = async ({ openNext = false }: { openNext?: boolean } = {}) => {
+    const file = this.getActiveMarkdownFile();
+    if (!file) return;
+
+    const saved = await this.commit((s) => markReviewed(s, file.path));
+    if (saved && openNext) await this.openRandomFile();
+  };
 ```
 
-```output
-   250	  openRandomFile = async () => {
-   251	    // An empty eligible list and a fully reviewed one are different problems,
-   252	    // and congratulating someone on a review they never started points them
-   253	    // away from the settings tab, which is where the actual fault is.
-   254	    const eligible = this.getEligibleFiles();
-   255	    if (!eligible.length) {
-   256	      new Notice(
-   257	        "No files are eligible for review — check your excluded folders.",
-   258	      );
-   259	      return;
-   260	    }
-   261	
-   262	    const unreviewed = eligible.filter((f) => !this.review.isReviewed(f.path));
-   263	    if (!unreviewed.length) {
-   264	      new Notice("All files are reviewed");
-   265	      return;
-   266	    }
-   267	
-   268	    const next = pickRandom(unreviewed);
-   269	    if (next) await this.app.workspace.getLeaf(false).openFile(next);
-   270	  };
+This is the one place the boolean from `commit` is consumed, and it is the reason the boolean
+exists: **do not navigate away from a file whose mark was not persisted.** Because `commit`
+returns `false` for both a refusal and a failed write, `saved` has exactly one meaning here.
+
+`src/main.ts` — `openRandomFile`
+
+```ts
+    const eligible = this.getEligibleFiles();
+    if (!eligible.length) {
+      new Notice(
+        "No files are eligible for review — check your excluded folders.",
+      );
+      return;
+    }
+
+    const unreviewed = eligible.filter((f) => !isReviewed(this.state, f.path));
+    if (!unreviewed.length) {
+      new Notice("All files are reviewed");
+      return;
+    }
+
+    const active = this.getActiveMarkdownFile();
+    const others = unreviewed.filter((f) => f.path !== active?.path);
+    const candidates = others.length ? others : unreviewed;
+
+    // Both early returns above have already established a non-empty list.
+    const next = candidates[Math.floor(Math.random() * candidates.length)];
+    await this.app.workspace.getLeaf(false).openFile(next);
 ```
 
-The comment states the reasoning: an empty vault-after-exclusions and a fully reviewed vault
-are different problems, and telling someone "All files are reviewed" when they have
-accidentally excluded everything sends them looking in the wrong place. That distinction was
-issue #102.
+Two failure modes are distinguished rather than collapsed, and the source says why:
+congratulating someone on a review they never started points them away from the settings tab,
+which is where the actual fault is.
 
-Every state-changing action funnels through one method.
+The active-file filter with its fallback is the subtle part. Opening the file already in the
+leaf is a no-op the user reads as a broken command — with three notes left it happens a third
+of the time. But filtering unconditionally would make the _last_ unreviewed file unopenable,
+which is worse. Hence `others.length ? others : unreviewed`.
 
-```bash
-cat -n src/plugin.ts | sed -n '272,304p'
+### Vault reconciliation
+
+`src/main.ts` — `handleFileRename` and `handleFileDelete`
+
+```ts
+  private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
+    await this.commit((s) =>
+      renamePath(s, oldPath, file.path, file instanceof TFolder),
+    );
+    this.settingsTab?.invalidate();
+  };
+
+  private handleFileDelete = async (file: TAbstractFile) => {
+    await this.commit((s) => removePath(s, file.path, file instanceof TFolder));
+    this.settingsTab?.invalidate();
+  };
 ```
 
-```output
-   272	  /**
-   273	   * Apply a review-state change and report whether it was persisted. The UI
-   274	   * must not show progress that is not on disk: a refused write is declined
-   275	   * before anything changes, and a failed one is rolled back.
-   276	   */
-   277	  private mutate = async (apply: () => void): Promise<boolean> => {
-   278	    if (this.saveBlocked) {
-   279	      new Notice(
-   280	        `Review: ${this.saveBlocked}. Changes will not be saved until you reload.`,
-   281	      );
-   282	      return false;
-   283	    }
-   284	
-   285	    // Settle any in-flight write first, so a rollback cannot be overtaken by
-   286	    // a save that was already queued from the state we are about to undo.
-   287	    await this.savePending;
-   288	
-   289	    const paths = [...this.review.reviewedPaths];
-   290	    const excludedFolders = [...this.review.excludedFolders];
-   291	    const startedAt = this.review.reviewStartedAt;
-   292	
-   293	    apply();
-   294	    this.statusBar.update();
-   295	
-   296	    try {
-   297	      await this.saveSettings();
-   298	      return true;
-   299	    } catch (err) {
-   300	      this.review.load(paths, excludedFolders, startedAt);
-   301	      this.statusBar.update();
-   302	      throw err;
-   303	    }
-   304	  };
+`instanceof TFolder` is the only Obsidian type test in the reconciliation path, and it stays
+here so the domain module needs no Obsidian import. It crosses as the `isFolder` boolean.
+
+These go through `commit` like every other writer rather than getting an exemption. A
+reconciliation that cannot be persisted must not be applied in memory either, or a blocked
+session shows exclusions the next reload will contradict. There is no `if (changed)` guard
+because `commit` already writes nothing when the transition returns the same reference.
+
+## The command table
+
+`src/commands.ts` is one array read by three surfaces.
+
+`src/commands.ts` — `ReviewCommand` and `COMMANDS`
+
+```ts
+export type ReviewCommand = {
+  id: string;
+  name: string;
+  /** Undefined means "always available". */
+  availableWhen?: "reviewed" | "not_reviewed";
+  label: string;
+  run: (plugin: ReviewPlugin) => Promise<unknown>;
+};
 ```
 
-Read it as four steps: refuse if fenced, drain the queue, snapshot-apply-save, roll back on
-failure. The boolean return is not decoration — `markReviewed({ openNext: true })` uses it to
-decide whether to advance, so a failed save leaves you on the file you were looking at rather
-than moving on as if it had worked.
+`availableWhen` is the rule, `run` is the action, `label` is the `runAsync` tag. Before this
+table those three lived in three files, each with its own copy of the same strings.
 
-The three callers are thin.
+`src/commands.ts` — `availableCommands`
 
-```bash
-cat -n src/plugin.ts | sed -n '306,333p'
+```ts
+export function availableCommands(
+  status: "reviewed" | "not_reviewed" | undefined,
+): ReviewCommand[] {
+  return COMMANDS.filter(
+    (command) => !command.availableWhen || command.availableWhen === status,
+  );
+}
 ```
 
-```output
-   306	  markReviewed = async ({ openNext = false }: { openNext?: boolean } = {}) => {
-   307	    const file = this.getActiveMarkdownFile();
-   308	    if (!file) return;
-   309	
-   310	    const saved = await this.mutate(() => this.review.markReviewed(file.path));
-   311	    if (saved && openNext) await this.openRandomFile();
-   312	  };
-   313	
-   314	  markUnreviewed = async () => {
-   315	    const file = this.getActiveMarkdownFile();
-   316	    if (!file) return;
-   317	
-   318	    await this.mutate(() => this.review.markUnreviewed(file.path));
-   319	  };
-   320	
-   321	  setExcludedFolders = async (list: string[]): Promise<boolean> => {
-   322	    return this.mutate(() => this.review.setExcludedFolders(list));
-   323	  };
-   324	
-   325	  resetReview = async ({
-   326	    confirm = true,
-   327	  }: {
-   328	    confirm?: boolean;
-   329	  } = {}): Promise<boolean> => {
-   330	    if (confirm && !(await this.confirmReset())) return false;
-   331	
-   332	    return this.mutate(() => this.review.reset());
-   333	  };
-```
-
-`resetReview` takes `confirm` so the modal can be skipped by a caller that has already asked,
-and `confirmReset` wraps `ConfirmResetModal` in a promise so the async flow reads linearly.
-
-The vault handlers are the exception to the `mutate` rule, and they say so by their shape:
-they call `saveSettings` directly, because the vault has already moved the file and there is
-nothing to roll back to.
-
-```bash
-cat -n src/plugin.ts | sed -n '342,357p'
-```
-
-```output
-   342	  // The `instanceof` stays on this side of the boundary so `Review` needs no
-   343	  // Obsidian import and stays directly testable.
-   344	  private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
-   345	    if (this.review.rename(oldPath, file.path, file instanceof TFolder)) {
-   346	      this.statusBar.update();
-   347	      await this.saveSettings();
-   348	    }
-   349	  };
-   350	
-   351	  private handleFileDelete = async (file: TAbstractFile) => {
-   352	    if (this.review.remove(file.path, file instanceof TFolder)) {
-   353	      this.statusBar.update();
-   354	      await this.saveSettings();
-   355	    }
-   356	  };
-   357	}
-```
-
-That is the whole plugin class. Note the `instanceof TFolder` on line 345: this is the only
-place in the codebase where Obsidian's type hierarchy is consulted, and the comment above it
-is the boundary being defended out loud.
+The array's **order** is the review menu's one piece of judgement, and it is why this returns
+a list rather than a set: when a file is unreviewed, "mark and open next" comes first, because
+that is the loop the plugin exists to accelerate.
 
 ## The UI
 
-### Status bar (`src/statusBar.ts`)
+### Status bar
 
-The status bar renders `getActiveFileStatus()` and doubles as an input surface.
+`src/statusBar.ts` — `update`
 
-```bash
-cat -n src/statusBar.ts | sed -n '19,29p'
+```ts
+  update = () => {
+    const status = this.plugin.getActiveFileStatus();
+    if (!status) {
+      this.setIsVisible(false);
+      return;
+    }
+
+    this.setIsVisible(this.plugin.state.showStatusBar);
+
+    this.element.setText(status === "reviewed" ? "Reviewed" : "Not reviewed");
+  };
 ```
 
-```output
-    19	  update = () => {
-    20	    const status = this.plugin.getActiveFileStatus();
-    21	    if (!status) {
-    22	      this.setIsVisible(false);
-    23	      return;
-    24	    }
-    25	
-    26	    this.setIsVisible(this.plugin.data.showStatusBar);
-    27	
-    28	    this.element.setText(status === "reviewed" ? "Reviewed" : "Not reviewed");
-    29	  };
+Two independent reasons to hide: nothing reviewable is open, or the user turned the item off.
+The first wins regardless of the preference.
+
+`src/statusBar.ts` — `setIsVisible`
+
+```ts
+  // Obsidian's own `is-hidden` rules are scoped to ribbon and stacked-tab
+  // elements, so the class styles nothing on a status-bar item. `toggle` sets
+  // inline display, which needs no stylesheet to agree with it.
+  private setIsVisible = (isVisible: boolean) => {
+    this.element.toggle(isVisible);
+  };
 ```
 
-Three states again: `undefined` hides the item entirely, and only an eligible markdown file
-respects the user's `showStatusBar` preference. Clicking opens a two-item checkable menu
-that routes back into `markReviewed` / `markUnreviewed`.
+This looks like a deviation from Obsidian convention and is in fact a fix for one. The
+comment is the only thing standing between this line and a well-meaning "simplification" back
+to `is-hidden`, which does nothing here.
 
-Hiding is done in an unusual way, and the comment is the reason to leave it alone.
+The click menu reads two entries out of the command table by id. It cannot simply render
+everything carrying an `availableWhen` — three commands do, and "mark and open next"
+_navigates_, which is not what a checkbox in a status-bar menu means.
 
-```bash
-cat -n src/statusBar.ts | sed -n '56,61p'
+### Modals
+
+`src/modals.ts` — `ConfirmResetModal`
+
+```ts
+  // The one settlement site. close() always runs onClose, whether it came from
+  // a button, Escape, or a click outside, so every dismissal lands here.
+  onClose(): void {
+    super.onClose();
+    this.resolve(this.confirmed);
+  }
 ```
 
-```output
-    56	  // Obsidian's own `is-hidden` rules are scoped to ribbon and stacked-tab
-    57	  // elements, so the class styles nothing on a status-bar item. `toggle` sets
-    58	  // inline display, which needs no stylesheet to agree with it.
-    59	  private setIsVisible = (isVisible: boolean) => {
-    60	    this.element.toggle(isVisible);
-    61	  };
+Cancel just calls `close()`; Reset sets `confirmed = true` and then calls `close()`. Because
+`close()` always runs `onClose`, every dismissal — including Escape and clicking outside —
+resolves the promise exactly once, with no bookkeeping flag. The `super.onClose()` call is
+an override rather than an instance-property assignment, which matters: assigning to
+`modal.onClose` shadows the base implementation instead of extending it.
+
+`ReviewMenuModal` is a `SuggestModal` driven entirely by the table:
+
+`src/modals.ts` — `getSuggestions` and `onChooseSuggestion`
+
+```ts
+  getSuggestions = (query: string): ReviewCommand[] => {
+    return availableCommands(this.plugin.getActiveFileStatus()).filter((c) =>
+      c.name.toLowerCase().includes(query.toLowerCase()),
+    );
+  };
+
+  onChooseSuggestion = (command: ReviewCommand) => {
+    this.plugin.runAsync(command.run(this.plugin), command.label);
+  };
 ```
 
-### Modals (`src/modals.ts`)
+There is no `switch` and no per-command dispatch. The modal filters and renders; the table
+supplies the behaviour.
 
-`ConfirmResetModal` has to resolve its promise exactly once, whichever way the modal is
-dismissed — button, Escape key, or click-outside. It solves that with a latch.
+### Settings tab
 
-```bash
-cat -n src/modals.ts | sed -n '35,46p'
+The settings tab holds the one piece of mutable UI state in the plugin, and it needs to.
+
+`src/settingsTab.ts` — `drafts` and `seeded`
+
+```ts
+  /**
+   * Excluded-folder rows as typed, before normalization — null while the tab
+   * is closed. Rows live here rather than in the plugin so a half-typed or
+   * momentarily-empty one survives on screen: setExcludedFolders drops empties
+   * and dedupes, which would otherwise delete a row out from under the user
+   * mid-word.
+   */
+  private drafts: string[] | null = null;
+
+  /**
+   * What `drafts` was seeded from. `hide()` compares against it so an untouched
+   * tab commits nothing — otherwise closing the tab writes back a snapshot that
+   * may be older than what the vault has since reconciled.
+   */
+  private seeded: string[] = [];
 ```
 
-```output
-    35	  /** Resolves exactly once, whichever way the modal is dismissed. */
-    36	  private settle = (confirmed: boolean) => {
-    37	    if (this.settled) return;
-    38	    this.settled = true;
-    39	    this.resolve(confirmed);
-    40	  };
-    41	
-    42	  onClose(): void {
-    43	    super.onClose();
-    44	    this.settle(false);
-    45	  }
-    46	}
+`drafts` is **not** a duplicate of the stored state — it is unnormalized text mid-edit. If the
+visible rows _were_ the stored list, clearing a row to retype it would delete the row, and
+typing the second character of a duplicate would collapse two rows into one.
+
+`seeded` exists because the buffer has a lifetime problem. Three things change the excluded
+folders from outside the tab — a vault rename, a vault delete, an external reload — and the
+tab was holding a pre-change snapshot it would write back on close.
+
+`src/settingsTab.ts` — `invalidate` and `hide`
+
+```ts
+  invalidate(): void {
+    this.debouncedCommit.cancel();
+    this.drafts = null;
+    if (this.containerEl.isShown()) this.display();
+  }
+
+  hide(): void {
+    this.debouncedCommit.cancel();
+
+    if (this.drafts && this.drafts.join("\n") !== this.seeded.join("\n")) {
+      this.commit();
+    }
+    this.drafts = null;
+  }
 ```
 
-Both buttons call `settle(...)` *before* `close()`, because `close()` runs `onClose`, which
-settles `false`. The latch makes the first call win. `onClose` calls `super.onClose()` first
-so Obsidian's own cleanup still runs — issue #103 was this method shadowing the base
-implementation instead of overriding it.
+Three mechanisms, each closing a different hole:
 
-`ReviewMenuModal` builds its list from the active file's status, and the *ordering* carries
-intent.
+- **`cancel()` in `hide()`.** The 500 ms debouncer would otherwise fire after `drafts = null`.
+- **The divergence check.** An untouched tab commits nothing, so it cannot revert a
+  reconciliation that happened while it was open.
+- **`invalidate()`.** Called from the rename handler, the delete handler and
+  `onExternalSettingsChange` — the three places that change the folders from outside.
 
-```bash
-cat -n src/modals.ts | sed -n '65,96p'
+The re-seed trigger is deliberately _"state changed and the tab did not cause it"_, never
+_"`display()` ran"_. The tab calls `display()` itself after adding a row and after the trash
+button; re-seeding there would make a just-added empty row vanish and a just-deleted one
+reappear before its commit lands.
+
+`src/settingsTab.ts` — the row's `onChange`
+
+```ts
+          // Only the draft changes per keystroke; normalization runs once the
+          // debounce fires, so typing a second "Templates" cannot collapse two
+          // visible rows into one entry mid-word.
+          text.onChange((value) => {
+            drafts[i] = value;
+            this.debouncedCommit();
+          });
 ```
 
-```output
-    65	  getSuggestions = (query: string): ReviewCommand[] => {
-    66	    const file = this.plugin.getActiveMarkdownFile();
-    67	    let suggestions: ReviewCommand[];
-    68	
-    69	    if (!file || !this.plugin.isFileEligible(file.path)) {
-    70	      suggestions = [
-    71	        { id: "open_random", name: "Open random unreviewed file" },
-    72	      ];
-    73	    } else {
-    74	      const isReviewed = this.plugin.isReviewed(file.path);
-    75	
-    76	      if (isReviewed) {
-    77	        suggestions = [
-    78	          { id: "open_random", name: "Open random unreviewed file" },
-    79	          { id: "unreview", name: "Mark file as unreviewed" },
-    80	        ];
-    81	      } else {
-    82	        suggestions = [
-    83	          {
-    84	            id: "review_and_next",
-    85	            name: "Mark file as reviewed and open next",
-    86	          },
-    87	          { id: "review", name: "Mark file as reviewed" },
-    88	          { id: "open_random", name: "Open random unreviewed file" },
-    89	        ];
-    90	      }
-    91	    }
-    92	
-    93	    return suggestions.filter((s) =>
-    94	      s.name.toLowerCase().includes(query.toLowerCase()),
-    95	    );
-    96	  };
-```
+### Folder autocomplete
 
-When the current file is unreviewed, "Mark file as reviewed and open next" is first — that is
-the loop the plugin exists to accelerate, one keystroke per note. When the file is already
-reviewed, "open random" leads instead. The final `filter` is the SuggestModal contract:
-Obsidian passes the typed query and expects the list already filtered.
-
-### Settings tab (`src/settingsTab.ts`)
-
-The settings tab keeps a third copy of the excluded-folder list, and the docstring explains
-why that is not redundancy.
-
-```bash
-cat -n src/settingsTab.ts | sed -n '8,29p'
-```
-
-```output
-     8	  /**
-     9	   * Excluded-folder rows as typed, before normalization — null while the tab
-    10	   * is closed. Rows live here rather than in the plugin so a half-typed or
-    11	   * momentarily-empty one survives on screen: setExcludedFolders drops empties
-    12	   * and dedupes, which would otherwise delete a row out from under the user
-    13	   * mid-word.
-    14	   */
-    15	  private drafts: string[] | null = null;
-    16	
-    17	  private debouncedCommit = debounce(() => this.commit(), 500, true);
-    18	
-    19	  constructor(app: App, plugin: ReviewPlugin) {
-    20	    super(app, plugin);
-    21	    this.plugin = plugin;
-    22	  }
-    23	
-    24	  private commit(): void {
-    25	    this.plugin.runAsync(
-    26	      this.plugin.setExcludedFolders(this.drafts ?? []),
-    27	      "save excluded folders",
-    28	    );
-    29	  }
-```
-
-`setExcludedFolders` drops empties and dedupes. If the on-screen rows *were* the stored list,
-clearing a row to retype it would delete the row, and typing the second `T` of a duplicate
-`Templates` would collapse two rows into one mid-word. So the rows live in `drafts` and
-normalization happens only when the debounce fires.
-
-```bash
-cat -n src/settingsTab.ts | sed -n '71,97p'
-```
-
-```output
-    71	    for (let i = 0; i < drafts.length; i++) {
-    72	      new Setting(containerEl)
-    73	        .setClass("review-excluded-folder")
-    74	        .addText((text) => {
-    75	          text.setValue(drafts[i]);
-    76	          // Only the draft changes per keystroke; normalization runs once the
-    77	          // debounce fires, so typing a second "Templates" cannot collapse two
-    78	          // visible rows into one entry mid-word.
-    79	          text.onChange((value) => {
-    80	            drafts[i] = value;
-    81	            this.debouncedCommit();
-    82	          });
-    83	          new FolderSuggest(this.app, text.inputEl).onSelect((folder) => {
-    84	            text.setValue(folder.path);
-    85	            drafts[i] = folder.path;
-    86	            this.commit();
-    87	          });
-    88	        })
-    89	        .addButton((btn) => {
-    90	          btn.setIcon("trash");
-    91	          btn.onClick(() => {
-    92	            drafts.splice(i, 1);
-    93	            this.commit();
-    94	            this.display();
-    95	          });
-    96	        });
-    97	    }
-```
-
-`for (let i = ...)` is required, not stylistic: each iteration needs its own binding of `i`
-for the two closures to address the right row. Picking from the autocomplete commits
-immediately rather than waiting out the debounce, because a click is unambiguous in a way
-that a keystroke is not.
-
-Closing the tab commits rather than prunes.
-
-```bash
-cat -n src/settingsTab.ts | sed -n '120,126p'
-```
-
-```output
-   120	  hide(): void {
-   121	    // Commit rather than prune: an edit made inside the debounce window would
-   122	    // otherwise be lost when the tab closes.
-   123	    this.commit();
-   124	    this.drafts = null;
-   125	  }
-   126	}
-```
-
-Setting `drafts` to `null` means the next `display()` re-seeds from
-`plugin.review.excludedFolders` — the normalized list — so reopening the tab shows what is
-actually stored.
-
-### Folder autocomplete (`src/folderSuggest.ts`)
-
-The smallest module in the project, and it is small because `AbstractInputSuggest` supplies
-everything except the query.
-
-```bash
-cat -n src/folderSuggest.ts
-```
-
-```output
-     1	import { AbstractInputSuggest, type TFolder } from "obsidian";
-     2	
-     3	export class FolderSuggest extends AbstractInputSuggest<TFolder> {
-     4	  getSuggestions(query: string): TFolder[] {
-     5	    const lowerQuery = query.toLowerCase();
-     6	    return this.app.vault
-     7	      .getAllFolders()
-     8	      .filter((folder) => folder.path.toLowerCase().includes(lowerQuery));
-     9	  }
-    10	
-    11	  renderSuggestion(folder: TFolder, el: HTMLElement): void {
-    12	    el.setText(folder.path);
-    13	  }
-    14	}
-```
+`src/folderSuggest.ts` is fourteen lines and subclasses Obsidian's `AbstractInputSuggest`,
+which supplies the dropdown, the keyboard handling and the `onSelect` callback. Only the
+search and the rendering are the plugin's.
 
 ## Tests
 
-Only the two Obsidian-free modules are unit tested, and that is the point — there is no mock,
-so the tests exercise the real classes. The `describe` blocks map one-to-one onto the public
-surface of `Review` and `normalizeData`.
+Two files, 70 tests, no Obsidian mock.
 
-```bash
-cat src/review.test.ts src/data.test.ts | grep '^describe' | sed 's/describe("/  /; s/", () => {//'
+`src/review.test.ts` covers the domain module directly. Its helper is worth reading, because
+it explains a real trap:
+
+`src/review.test.ts` — `stateWith`
+
+```ts
+function stateWith(
+  paths: string[],
+  excludedFolders: string[] = [],
+  startedAt?: string,
+): PluginState {
+  // Built directly rather than through normalizeState, so the tests can use
+  // sentinel clock values ("loaded", "first") that are not parseable dates.
+  return {
+    ...normalizeState({ excludedFolders }),
+    reviewedPaths: new Set(paths),
+    reviewStartedAt: startedAt,
+  };
+}
 ```
 
-```output
-  isEligible
-  setExcludedFolders
-  load
-  markReviewed
-  markUnreviewed
-  reset
-  pickRandom
-  stats
-  rename a file
-  rename a folder
-  remove a file
-  remove a folder
-  normalizeData
+`normalizeState` validates `reviewStartedAt` as a parseable date, so routing fixtures through
+it would silently drop the sentinels the clock tests depend on.
+
+`src/store.test.ts` is the half that could not exist before the store was extracted. Its
+harness binds `load` and `save` to functions the test controls, including ones that throw and
+ones that block until released:
+
+`src/store.test.ts` — the manual-write harness
+
+```ts
+    settle: async (ok) => {
+      // The queue dispatches on a microtask, so the write may not have reached
+      // `save` yet when the test asks to settle it.
+      while (!releases.length) await Promise.resolve();
+      releases.shift()?.(ok);
+    },
 ```
 
-Determinism comes from injection rather than mocking: `markReviewed(path, now)` takes a clock
-and `pickRandom(items, rng)` takes a generator, both defaulted, so a test can pin either
-without a framework.
+The tests that matter are the ones about the user whose disk is full: a `save` that throws
+leaves the state unchanged and reports `false`; a `load` that throws sets the fence and
+refuses the next commit; a second reload lifts a transient fence; overlapping commits compose;
+a failed write does not stop its successor; and a reload queued behind a write lands after it.
 
-```bash
-bun test 2>&1 | grep -oE '[0-9]+ (pass|fail)'
-```
-
-```output
-47 pass
-0 fail
-```
-
-Plugin integration — everything that touches the Obsidian API — is not unit tested. It is
-verified by `bun run deploy` into a real vault.
+Nothing tests `main.ts` or the UI modules — they import Obsidian, and the project keeps no
+mock by choice. Those paths are verified by deploying into a vault.
 
 ## Build and release
 
-`build.ts` is a direct `Bun.build` call. Two options in it are not defaults and both matter.
+`package.json` — scripts
 
-```bash
-cat -n build.ts | sed -n '5,23p'
+```jsonc
+"dev": "bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --sourcemap=linked --watch",
+"build": "bun run check && bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --minify",
+"check": "bun run typecheck && biome check . && prettier --check \"**/*.md\"",
 ```
 
-```output
-     5	async function build() {
-     6	  const result = await Bun.build({
-     7	    entrypoints: ["src/main.ts"],
-     8	    outdir: ".",
-     9	    format: "cjs",
-    10	    external: ["obsidian", "electron"],
-    11	    minify: !isWatch,
-    12	    sourcemap: isWatch ? "linked" : "none",
-    13	    // Default is `throw: true`, which rejects with an AggregateError and leaves
-    14	    // the failure handling below unreachable — and kills the watcher.
-    15	    throw: false,
-    16	  });
-    17	
-    18	  if (!result.success) {
-    19	    console.error("Build failed");
-    20	    for (const message of result.logs) console.error(message);
-    21	    if (!isWatch) process.exit(1);
-    22	    return;
-    23	  }
-```
+`obsidian` and `electron` are external because Obsidian provides them at runtime. `check` is
+non-mutating on purpose — `build` runs it and so does the release workflow; `lint:fix` is the
+writing counterpart.
 
-`format: "cjs"` is what Obsidian requires, and `external: ["obsidian", "electron"]` keeps the
-host's own modules out of the bundle. `throw: false` is there because Bun's default rejects
-with an `AggregateError`, which would make the error handling below it unreachable and — in
-watch mode — kill the watcher on the first typo (issue #93).
+**`main.js` is committed**, and CI enforces that it matches a fresh build. The repository is
+cloned directly into a vault, which is the workflow the committed bundle serves. Any source
+change, dependency bump, or Bun release that shifts bundler output must be followed by a
+rebuild and a commit of `main.js`.
 
-The built `main.js` is committed to the repository, and CI enforces that it matches a fresh
-build.
+`version-bump.ts` syncs `manifest.json` and `versions.json` from `package.json`, and refuses
+to run without a `minAppVersion` — because `JSON.stringify` drops `undefined`, the
+`versions.json` entry would otherwise vanish while the script reported success.
 
-```bash
-sed -n '17,25p' .github/workflows/main.yml
-```
-
-```output
-      - run: bun install
-      - run: bun audit --audit-level=critical
-      # `build` is check + bundle. The diff then fails the PR when the committed
-      # main.js does not match a fresh build — Obsidian ships the committed
-      # bundle, so a dependency bump that skips the rebuild must not merge.
-      # bun is deliberately unpinned, so a bun release that shifts bundler
-      # output trips this too. The fix is the same either way: rebuild and
-      # commit main.js.
-      - run: bun run build
-```
-
-`git diff --exit-code main.js` is the enforcement. Because Bun is unpinned (`bun-version:
-latest`), a Bun release that shifts bundler output fails the same check; the fix is always
-the same — rebuild and commit `main.js`.
-
-Releases are tag-driven: pushing an `x.y.z` tag runs `.github/workflows/release.yml`, which
-builds and attaches `main.js`, `styles.css`, and `manifest.json` with
-`fail_on_unmatched_files: true`. `version-bump.ts` keeps `manifest.json` and `versions.json`
-in step with `package.json` and throws rather than silently succeeding if `minAppVersion` is
-missing — `JSON.stringify` drops `undefined`, so the `versions.json` entry would otherwise
-vanish without a word.
+Releases are cut by pushing a bare `x.y.z` tag, which runs `.github/workflows/release.yml`.
+That workflow asserts the tag equals `manifest.json`'s version before building — Obsidian
+keys installs off the manifest, so a mismatch would install as the manifest's version and no
+longer match the release it came from.
 
 ## Where the linear order broke down
 
-Two places, recorded here so the next reader knows it was the code and not the narrative.
+Two places, both worth naming.
 
-**Two owners of the same state.** `Review` owns `reviewedPaths`, `excludedFolders`, and
-`reviewStartedAt`; `plugin.data` holds a copy of those *plus* `showStatusBar`, which lives
-nowhere else. Explaining `saveSettings` required introducing the copy before the reader had
-seen anything that reads it, and explaining the settings tab required going back to it. See
-the findings below.
+**`onChange` and the status bar form a loop that the reading order cannot follow.** The store
+is introduced as Obsidian-free and self-contained, and it is — but `main.ts` hands it a
+callback that repaints the status bar, and the status bar reads `plugin.state`, which is the
+store's field. Explaining the store fully requires deferring `onChange` to the plugin section;
+explaining the plugin requires having already read the store. The cycle is small and the
+`onChange?: () => void` type keeps it honest, but there is no order that avoids the
+forward reference.
 
-**`schemaVersion` skips its own validator.** `normalizeData` is introduced as the guard on
-everything read from `data.json`, and its signature then excludes the one field that gates
-whether the plugin will write at all. That had to be flagged twice — once in `data.ts`, again
-in `loadSettings` — because neither location explains it alone.
+**The settings tab's `drafts` cannot be explained where it is declared.** The field makes no
+sense until you know three separate things: that `setExcludedFolders` normalizes, that a
+debouncer sits between a keystroke and a commit, and that the vault can change the folders
+while the tab is open. Those are declared in three different files, and the buffer's whole
+justification lives in the gaps between them.
 
 ## Findings
 
-Two things this pass turned up are filed in `.issues/`. Both are structural rather than
-behavioural, and both are reported here because a reader of this document should not have to
-rediscover them.
+Three, filed this pass.
 
-| #   | Severity | Issue                                                       | Primary location                              |
-| --- | -------- | ----------------------------------------------------------- | --------------------------------------------- |
-| 1   | medium   | `two-owners-of-the-same-review-state-break-the-linear-read` | `src/plugin.ts:176-187`, `src/settingsTab.ts:43` |
-| 2   | low      | `reset-review-confirm-option-is-unreachable`                | `src/plugin.ts:325-333`, `src/settingsTab.ts:52` |
+The prose of the previous `WALKTHROUGH.md` was stale in most of its sections — it documented
+`src/data.ts`, `src/plugin.ts`, `build.ts`, the `Review` class and `mutate`, none of which
+exist. That is not filed as a finding because this pass replaced the document, which is the
+fix.
 
-**Total: 2 issues (0 critical, 0 high, 1 medium, 1 low)**
+## Index
 
-`THEORY.md` carries its own index of five further findings from the same `.issues/`
-directory, covering the persistence rails rather than the reading order.
+| #   | Severity | Issue                                                         | Primary location                   |
+| --- | -------- | ------------------------------------------------------------- | ---------------------------------- |
+| 1   | low      | `commit` docstring describes a rollback that no longer exists | `src/main.ts` — `commit`           |
+| 2   | low      | Comment cites a `Review` class that no longer exists          | `src/main.ts` — `handleFileRename` |
+| 3   | low      | `Store.isBlocked` has no production caller                    | `src/store.ts` — `isBlocked`       |
 
+**Total: 3 issues (0 critical, 0 high, 0 medium, 3 low)**
