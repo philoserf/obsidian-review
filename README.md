@@ -33,6 +33,8 @@ Every markdown file in your vault is either **reviewed** or **not reviewed**. Th
 
 **Statistics** in the settings panel show eligible files, reviewed count, and completion percentage.
 
+**When changes cannot be saved** — the saved data could not be read, or was written by a newer version of the plugin — the settings panel says so at the top, and nothing is written over your existing review until the cause is cleared.
+
 ## Alternatives
 
 - [SashaKryzh/obsidian-vault-review](https://github.com/SashaKryzh/obsidian-vault-review) — the original upstream this fork diverged from.

@@ -311,6 +311,9 @@ Ranked by how likely the mistake is and how quiet the damage:
    with a quieter cost: correct writes, and a notice storm nobody will trace back to here.
 2. **Making a transition return a fresh object unconditionally.** Every test still passes. The
    plugin starts writing the whole reviewed-path set on every keystroke, and nothing says so.
+   Two things now lean on the reference-equality signal rather than one: `commit` uses it to
+   write nothing when nothing changed, and `reconcile` uses it to decide whether the settings
+   tab has to be told.
 3. **Merging `drafts` into the stored state.** It reads as removing a redundant copy. It
    restores the mid-word row-deletion bug.
 4. **Moving `excludedFolders` out of the shared value**, into something that feels more like
