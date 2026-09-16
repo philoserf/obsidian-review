@@ -16,21 +16,42 @@ export type PluginData = {
 };
 
 /**
- * The persisted document as one immutable value. Every change is a pure
- * function from this to the next one, and a transition that changes nothing
- * returns the same reference — which is the "nothing happened" signal that
- * rename and remove used to report as a boolean.
+ * The review itself: what has been reviewed, when the round started, and what
+ * is out of scope. `reset` works entirely within this group — it clears the
+ * progress and leaves the scope alone — and never reaches the fields below,
+ * which is the rule the split exists to make visible.
  *
  * The vault is the source of truth for what exists, so renamePath/removePath
  * reconcile the stored paths against it rather than maintaining an
  * authoritative file list. That reconciliation covers excludedFolders too — it
- * lives here for exactly that reason.
+ * is why an exclusion list lives in the review rather than beside it.
  */
-export type PluginState = {
-  readonly schemaVersion: number;
+type ReviewState = {
   readonly reviewedPaths: ReadonlySet<string>;
   readonly reviewStartedAt?: string;
   readonly excludedFolders: readonly string[];
+};
+
+/**
+ * The persisted document as one immutable value: the review, plus a UI
+ * preference and a file-format detail that share its file. Every change is a
+ * pure function from this to the next one, and a transition that changes
+ * nothing returns the same reference — which is the "nothing happened" signal
+ * that rename and remove used to report as a boolean.
+ *
+ * The three kinds stay distinguishable on purpose. A closed issue once ruled
+ * that `showStatusBar` is "UI preference, not review domain" and kept it out of
+ * the review object; that ruling still holds, and what changed is only that the
+ * thing being typed here is the whole document rather than the review. So the
+ * next preference joins this side of the intersection, not `ReviewState`, and
+ * `reset` keeps clearing one group without having to remember which fields are
+ * in it.
+ *
+ * The intersection is still a flat object, so `data.json` is unchanged — which
+ * is the project's one real compatibility constraint.
+ */
+export type PluginState = ReviewState & {
+  readonly schemaVersion: number;
   readonly showStatusBar: boolean;
 };
 
@@ -189,6 +210,11 @@ export function setShowStatusBar(
   return { ...state, showStatusBar };
 }
 
+/**
+ * Clears the progress, not the scope and not the preferences: excluded folders
+ * are how the user narrowed the review, and starting over does not mean they
+ * wanted that undone. Everything it touches is a `ReviewState` field.
+ */
 export function reset(state: PluginState): PluginState {
   if (!state.reviewedPaths.size && !state.reviewStartedAt) return state;
 

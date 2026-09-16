@@ -260,10 +260,19 @@ That was three files before the table existed.
 
 **A new query over review state.** A pure function in `review.ts`, tested directly.
 
-**A new persisted field.** Add it to `PluginData` and `PluginState`, coerce it in
+**A new persisted field.** Add it to `PluginData` and to one side of `PluginState`, coerce it in
 `normalizeState`, and `serialize` carries it. Note the trap the current design removed: a
 field used to be silently unpersisted unless someone remembered to add a line to the save
 path, and nothing failed if they did not.
+
+Which side is the decision worth making deliberately. `PluginState` is `ReviewState`
+intersected with `schemaVersion` and `showStatusBar`, and those are three different kinds of
+thing sharing one file: the review, a UI preference, and a file-format detail. A field about
+what has been reviewed or what is in scope belongs in `ReviewState`, where vault reconciliation
+and `reset` will find it; a second preference goes beside `showStatusBar`. The intersection is
+still a flat object, so `data.json` does not care either way — this is a distinction drawn for
+the reader and for `reset`, which must keep clearing the progress without clearing what the
+user configured.
 
 **A different storage backend.** The store takes `load` and `save` as functions. Nothing about
 it knows they are Obsidian's.
@@ -314,12 +323,6 @@ it was deliberate, because the alternative was written down and rejected. But a 
 does and not that the other option was considered. That is the claim in this document I would
 most want a second opinion on.
 
-**I cannot tell whether `showStatusBar` belongs in the persisted value or merely ended up
-there.** A closed issue ruled that it is "UI preference, not review domain" and kept it
-separate; the current type flattens it in. I argue in the index-linked finding that the
-flattening is defensible because the object's identity changed — but nothing records the
-change of mind, and I am reconstructing it.
-
 **Nothing enforces that transitions are pure.** The value they operate on is thoroughly
 protected — `ReadonlySet`, `readonly` arrays and fields, all three checked and all three
 compile errors. But a transition that mutated its argument and returned it would defeat the
@@ -338,11 +341,12 @@ what the settings tab does when a rename arrives mid-edit are traced, not observ
 
 ## Index
 
-| #                                                              | Severity | Issue                                                                 | Primary location                |
-| -------------------------------------------------------------- | -------- | --------------------------------------------------------------------- | ------------------------------- |
-| [167](https://github.com/philoserf/obsidian-review/issues/167) | low      | The preference-versus-review-domain distinction has no representation | `src/review.ts` — `PluginState` |
+No open findings from this pass. Both were closed by the work that followed it:
+[#166](https://github.com/philoserf/obsidian-review/issues/166) made the document private
+behind a getter, and [#167](https://github.com/philoserf/obsidian-review/issues/167) split the
+review fields from the preference that shares their file.
 
-**Total: 1 issue (0 critical, 0 high, 0 medium, 1 low)**
+**Total: 0 issues**
 
 Three further findings on this code were filed by the walkthrough pass that ran alongside this
 one: a `commit` docstring that still describes the removed rollback ([#163](https://github.com/philoserf/obsidian-review/issues/163)), a
