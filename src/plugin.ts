@@ -209,6 +209,11 @@ export default class ReviewPlugin extends Plugin {
   };
 
   onExternalSettingsChange = async () => {
+    // Settle any in-flight write first. Queued writes carry a snapshot taken at
+    // call time, so one that lands after this reload would overwrite the very
+    // state we are adopting from disk.
+    await this.savePending;
+
     await this.loadSettings();
     this.statusBar.update();
   };
