@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.3.0
+
+### Fixed
+
+- Settings: a debounced commit outliving the tab could persist an empty excluded-folder list, and an external reload could revert what the tab had just written (#110, #111, #117)
+- Excluded folders are normalized on load and after a vault rename, so an entry with stray whitespace or a trailing slash actually excludes its notes instead of silently matching nothing (#113)
+- "Review a random note" no longer offers the file that is already open, unless it is the only one left (#128, #137)
+- `schemaVersion` is validated before it is trusted, so `data.json` written by a newer plugin version is never overwritten with this version's narrower view of it (#129, #131)
+- Overlapping writes compose instead of racing: a failed write no longer reverts a change that did reach disk (#112, #119, #124)
+- A write refused while it was waiting its turn now reports failure instead of success (#116)
+- Every writer goes through one commit path, so the status-bar toggle can no longer flip in the UI with nothing written to disk (#115)
+- A vault rename or delete no longer discards a half-typed excluded-folder row, and no longer announces itself when writes are fenced and the change touched nothing under review (#168)
+
+### Changed
+
+- The persisted document is one immutable value owned by a new `Store` (`src/store.ts`), which holds the write fence and the write queue and is testable without an Obsidian mock (#136, #138)
+- State is adopted after the write resolves rather than applied speculatively and rolled back, so the status bar never shows progress that is not on disk (#112, #116, #119, #124)
+- Review actions live in one table (`src/commands.ts`) read by the command palette, the review menu and the status-bar menu; a Biome rule now fails the build if `review.ts` or `store.ts` imports Obsidian (#118, #120, #134)
+- Reset drops its settled guard and an unreachable confirmation option (#130, #135)
+- `build.ts` replaced by the `bun build` CLI (#126)
+- Release CI runs the tests and asserts the pushed tag matches `manifest.json` (#139)
+- `THEORY.md` and `WALKTHROUGH.md` rebuilt for the new architecture
+
 ## 2.2.0
 
 ### Fixed
