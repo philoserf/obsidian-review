@@ -14,6 +14,25 @@ export type ReviewStats = {
  * authoritative file list. That reconciliation covers excludedFolders too — it
  * lives here for exactly that reason.
  */
+/**
+ * The only way in. A folder that is not trimmed of whitespace or stripped of
+ * trailing slashes matches nothing, silently, because `isEligible` tests for a
+ * `${folder}/` prefix. Every writer of `excludedFolders` runs through here:
+ * `setExcludedFolders` (the UI), `load` (the disk), and `renameFolder` (vault
+ * reconciliation, which maps entries independently and can collide two onto one).
+ */
+function normalizeFolders(list: string[]): string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of list) {
+    const folder = entry.trim().replace(/\/+$/, "");
+    if (!folder || seen.has(folder)) continue;
+    seen.add(folder);
+    normalized.push(folder);
+  }
+  return normalized;
+}
+
 export class Review {
   reviewedPaths = new Set<string>();
   reviewStartedAt?: string;
@@ -21,7 +40,7 @@ export class Review {
 
   load(paths: string[], excludedFolders: string[], startedAt?: string): void {
     this.reviewedPaths = new Set(paths);
-    this.excludedFolders = [...excludedFolders];
+    this.excludedFolders = normalizeFolders(excludedFolders);
     this.reviewStartedAt = startedAt;
   }
 
@@ -32,20 +51,11 @@ export class Review {
   }
 
   /**
-   * The only way in. A folder that is not trimmed of whitespace or trailing
-   * slashes matches nothing, silently, so normalizing anywhere but here would
-   * leave a way to store one.
+   * One of three writers, all of which go through `normalizeFolders`. It is the
+   * function, not this method, that is the only way in — see its docstring.
    */
   setExcludedFolders(list: string[]): void {
-    const normalized: string[] = [];
-    const seen = new Set<string>();
-    for (const entry of list) {
-      const folder = entry.trim().replace(/\/+$/, "");
-      if (!folder || seen.has(folder)) continue;
-      seen.add(folder);
-      normalized.push(folder);
-    }
-    this.excludedFolders = normalized;
+    this.excludedFolders = normalizeFolders(list);
   }
 
   isReviewed(path: string): boolean {
@@ -111,17 +121,19 @@ export class Review {
     for (const p of moved) this.reviewedPaths.add(p);
 
     // The excluded folder itself, and any excluded folder beneath it.
-    this.excludedFolders = this.excludedFolders.map((folder) => {
-      if (folder === oldPath) {
-        changed = true;
-        return newPath;
-      }
-      if (folder.startsWith(oldPrefix)) {
-        changed = true;
-        return newPrefix + folder.slice(oldPrefix.length);
-      }
-      return folder;
-    });
+    this.excludedFolders = normalizeFolders(
+      this.excludedFolders.map((folder) => {
+        if (folder === oldPath) {
+          changed = true;
+          return newPath;
+        }
+        if (folder.startsWith(oldPrefix)) {
+          changed = true;
+          return newPrefix + folder.slice(oldPrefix.length);
+        }
+        return folder;
+      }),
+    );
 
     return changed;
   }
