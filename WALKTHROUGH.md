@@ -375,6 +375,24 @@ would mean a flag parameter.
 `src/store.ts` owns the document, the write fence and the write queue. It is Obsidian-free,
 which is the point.
 
+The document itself is private, and readable through a getter:
+
+```ts
+  private current: PluginState = EMPTY_STATE;
+
+  get state(): PluginState {
+    return this.current;
+  }
+```
+
+Two lines that are easy to read past, and they are what makes "every change goes through
+`commit`" a rule rather than a habit. `current` is assigned in exactly two places — the load
+path below, and the last line of `commit`. Nothing outside the class can reach either. When
+the field was public the value's own immutability was still enforced (`ReadonlySet`, `readonly`
+fields — all three mutations are compile errors), so the type system looked like it was
+guarding this state while the one move that mattered, replacing the field wholesale, compiled
+in silence and skipped the fence, the queue and the write.
+
 ### Injected dependencies
 
 `src/store.ts` — `StoreDeps`
@@ -409,7 +427,7 @@ is precisely the user the fence exists for and the one no test could previously 
     ...
     // Keep a newer version's number, so the file is not truncated to v2
     // if something later lifts the write block.
-    this.state = {
+    this.current = {
       ...normalized,
       schemaVersion: isNewer ? savedVersion : CURRENT_SCHEMA_VERSION,
     };
@@ -479,8 +497,8 @@ state just adopted from disk.
 ```ts
   commit = (apply: (state: PluginState) => PluginState): Promise<boolean> =>
     this.enqueue(async () => {
-      const next = apply(this.state);
-      if (next === this.state) return true;
+      const next = apply(this.current);
+      if (next === this.current) return true;
 
       if (this.blocked) {
         this.deps.notify(
@@ -503,7 +521,7 @@ state just adopted from disk.
         return false;
       }
 
-      this.state = next;
+      this.current = next;
       this.deps.onChange?.();
       return true;
     });
@@ -513,7 +531,7 @@ Read it in order, because each line is load-bearing:
 
 1. **The transition runs inside the queue.** So it computes from whatever the previous commit
    actually persisted. Two overlapping commits compose instead of racing.
-2. **`next === this.state` short-circuits, before the fence is consulted.** The
+2. **`next === this.current` short-circuits, before the fence is consulted.** The
    reference-equality signal, cashed in: a transition that changed nothing writes nothing and
    still reports success — fenced or not. The ordering matters because reconciliation commits
    on _every_ vault rename and delete, and almost none of them touch the review. Checking

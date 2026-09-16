@@ -25,7 +25,20 @@ export type StoreDeps = {
 };
 
 export class Store {
-  state: PluginState = EMPTY_STATE;
+  /**
+   * The persisted document. Private and read through the getter below: the
+   * design rests on `commit` being the only way to change state, and a public
+   * field left that as convention. Assigning it from a UI module typechecked,
+   * ran, and skipped the fence, the queue and the write — after which the next
+   * successful commit would serialize the smuggled value as though it had been
+   * persisted all along.
+   */
+  private current: PluginState = EMPTY_STATE;
+
+  /** The current state. Replaced by `commit` and `reload`, by nothing else. */
+  get state(): PluginState {
+    return this.current;
+  }
 
   /**
    * Why writing is refused, or null when it is allowed. Set on every path
@@ -77,7 +90,7 @@ export class Store {
 
     // Keep a newer version's number, so the file is not truncated to v2
     // if something later lifts the write block.
-    this.state = {
+    this.current = {
       ...normalized,
       schemaVersion: isNewer ? savedVersion : CURRENT_SCHEMA_VERSION,
     };
@@ -131,8 +144,8 @@ export class Store {
       // another plugin writes — and checking `blocked` first made a fenced
       // session pop a Notice for each one. `apply` is pure and synchronous, so
       // no await window opens between here and the fence below.
-      const next = apply(this.state);
-      if (next === this.state) return true;
+      const next = apply(this.current);
+      if (next === this.current) return true;
 
       if (this.blocked) {
         this.deps.notify(
@@ -155,7 +168,7 @@ export class Store {
         return false;
       }
 
-      this.state = next;
+      this.current = next;
       this.deps.onChange?.();
       return true;
     });

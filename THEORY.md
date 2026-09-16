@@ -96,6 +96,15 @@ Three consequences you must not "simplify" away:
   not reopen the hole above — `apply` is pure and synchronous, so nothing can arrive between
   the fence check and the write.
 
+**`commit` is the only door, and the compiler holds it.** Every method that could bypass it —
+a bare `save`, a `setState` — was deleted when the last writers were routed through it, but the
+document itself stayed a public field, so the rule survived only because nobody had written the
+line that broke it. The field is now `private current`, read through a getter. This matters more
+than tidiness: the value's own immutability was already enforced three ways over, which made the
+type system look like it was guarding this state while the one move that skips the fence, the
+queue and the write — replacing the whole field — typechecked in silence. Mutating the value in
+place is a bug that cannot lose data; replacing it is one that can.
+
 `commit` returns `false` for both a refusal and an I/O failure, and that is deliberate rather
 than lazy: the caller's question is "is this on disk?", and both answers are no. Two callers
 act on it, and both want the merged meaning. `markReviewed` will not navigate you away from a
@@ -323,24 +332,17 @@ install. The ordering hole it opened was real and is closed, but whether the hoo
 outside a sync setup I cannot determine from the code, and it changes how much the surrounding
 machinery is worth.
 
-**The one-door rule is the weakest link between this theory and the code.** `CLAUDE.md` states
-that `commit` is the only way to change state, and every _method_ that bypassed it was deleted.
-The field is still public and assignable. I verified this compiles and runs. The theory in this
-document assumes the rule holds; today it holds because nobody has written the line that breaks
-it. See the index.
-
 **Everything about `main.ts` and the UI modules rests on reading the call graph**, not on
 execution. They import Obsidian and there is no mock, by choice. Claims in this document about
 what the settings tab does when a rename arrives mid-edit are traced, not observed.
 
 ## Index
 
-| #                                                              | Severity | Issue                                                                    | Primary location                |
-| -------------------------------------------------------------- | -------- | ------------------------------------------------------------------------ | ------------------------------- |
-| [166](https://github.com/philoserf/obsidian-review/issues/166) | medium   | `Store.state` is publicly assignable, so the one-door rule is convention | `src/store.ts` — `state`        |
-| [167](https://github.com/philoserf/obsidian-review/issues/167) | low      | The preference-versus-review-domain distinction has no representation    | `src/review.ts` — `PluginState` |
+| #                                                              | Severity | Issue                                                                 | Primary location                |
+| -------------------------------------------------------------- | -------- | --------------------------------------------------------------------- | ------------------------------- |
+| [167](https://github.com/philoserf/obsidian-review/issues/167) | low      | The preference-versus-review-domain distinction has no representation | `src/review.ts` — `PluginState` |
 
-**Total: 2 issues (0 critical, 0 high, 1 medium, 1 low)**
+**Total: 1 issue (0 critical, 0 high, 0 medium, 1 low)**
 
 Three further findings on this code were filed by the walkthrough pass that ran alongside this
 one: a `commit` docstring that still describes the removed rollback ([#163](https://github.com/philoserf/obsidian-review/issues/163)), a
