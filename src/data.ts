@@ -8,15 +8,6 @@ export type PluginData = {
 
 export const CURRENT_SCHEMA_VERSION = 2;
 
-export const DEFAULT_DATA: PluginData = {
-  schemaVersion: CURRENT_SCHEMA_VERSION,
-  reviewedPaths: [],
-  excludedFolders: [],
-  showStatusBar: true,
-};
-
-export type SavedData = Partial<PluginData>;
-
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
@@ -29,7 +20,7 @@ function stringArray(value: unknown): string[] {
  * value. Coerce rather than throw — a bad field must degrade to its default so
  * the settings tab still renders and the user can repair it from the UI.
  */
-export function normalizeData(raw: unknown): Omit<PluginData, "schemaVersion"> {
+export function normalizeData(raw: unknown): PluginData {
   const data = (typeof raw === "object" && raw !== null ? raw : {}) as Record<
     string,
     unknown
@@ -37,6 +28,15 @@ export function normalizeData(raw: unknown): Omit<PluginData, "schemaVersion"> {
   const startedAt = data.reviewStartedAt;
 
   return {
+    // The field that decides whether the plugin runs read-only, so it is the
+    // last one that should be trusted raw. A numeric string would be coerced
+    // by `>` and then stored back as a string; anything non-coercible compares
+    // false, disengaging the write fence entirely.
+    schemaVersion:
+      typeof data.schemaVersion === "number" &&
+      Number.isInteger(data.schemaVersion)
+        ? data.schemaVersion
+        : CURRENT_SCHEMA_VERSION,
     reviewedPaths: stringArray(data.reviewedPaths),
     reviewStartedAt:
       typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))
@@ -44,8 +44,6 @@ export function normalizeData(raw: unknown): Omit<PluginData, "schemaVersion"> {
         : undefined,
     excludedFolders: stringArray(data.excludedFolders),
     showStatusBar:
-      typeof data.showStatusBar === "boolean"
-        ? data.showStatusBar
-        : DEFAULT_DATA.showStatusBar,
+      typeof data.showStatusBar === "boolean" ? data.showStatusBar : true,
   };
 }
