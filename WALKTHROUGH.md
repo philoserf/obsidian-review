@@ -1035,7 +1035,7 @@ justification lives in the gaps between them.
 
 ## Findings
 
-Three, filed this pass.
+Three, filed this pass — tracked as [#163](https://github.com/philoserf/obsidian-review/issues/163), [#164](https://github.com/philoserf/obsidian-review/issues/164) and [#165](https://github.com/philoserf/obsidian-review/issues/165).
 
 The prose of the previous `WALKTHROUGH.md` was stale in most of its sections — it documented
 `src/data.ts`, `src/plugin.ts`, `build.ts`, the `Review` class and `mutate`, none of which
@@ -1044,10 +1044,10 @@ fix.
 
 ## Index
 
-| #   | Severity | Issue                                                         | Primary location                   |
-| --- | -------- | ------------------------------------------------------------- | ---------------------------------- |
-| 1   | low      | `commit` docstring describes a rollback that no longer exists | `src/main.ts` — `commit`           |
-| 2   | low      | Comment cites a `Review` class that no longer exists          | `src/main.ts` — `handleFileRename` |
-| 3   | low      | `Store.isBlocked` has no production caller                    | `src/store.ts` — `isBlocked`       |
+| #                                                              | Severity | Issue                                                         | Primary location                   |
+| -------------------------------------------------------------- | -------- | ------------------------------------------------------------- | ---------------------------------- |
+| [163](https://github.com/philoserf/obsidian-review/issues/163) | low      | `commit` docstring describes a rollback that no longer exists | `src/main.ts` — `commit`           |
+| [164](https://github.com/philoserf/obsidian-review/issues/164) | low      | Comment cites a `Review` class that no longer exists          | `src/main.ts` — `handleFileRename` |
+| [165](https://github.com/philoserf/obsidian-review/issues/165) | low      | `Store.isBlocked` has no production caller                    | `src/store.ts` — `isBlocked`       |
 
 **Total: 3 issues (0 critical, 0 high, 0 medium, 3 low)**
