@@ -5,23 +5,35 @@ import {
   type TFile,
   TFolder,
 } from "obsidian";
-import { CURRENT_SCHEMA_VERSION, normalizeData, type PluginData } from "./data";
 import { ConfirmResetModal, ReviewMenuModal } from "./modals";
-import { Review, type ReviewStats } from "./review";
+import {
+  CURRENT_SCHEMA_VERSION,
+  EMPTY_STATE,
+  isEligible,
+  isReviewed,
+  markReviewed,
+  markUnreviewed,
+  normalizeState,
+  type PluginData,
+  type PluginState,
+  type ReviewStats,
+  removePath,
+  renamePath,
+  reset,
+  serialize,
+  setExcludedFolders,
+  stats,
+} from "./review";
 import { ReviewSettingTab } from "./settingsTab";
 import { StatusBar } from "./statusBar";
 
 export default class ReviewPlugin extends Plugin {
   /**
-   * The two persisted fields `Review` does not own. Everything else in
-   * `PluginData` lives in `review` and is serialized from it at save time —
-   * keeping a second copy here is what made a rolled-back write leave the
-   * settings tab reporting a review that was never discarded.
+   * The whole persisted document, as one immutable value. Replaced, never
+   * modified: every transition in review.ts is a pure function of it, so there
+   * is exactly one place to look for "what is the current state".
    */
-  schemaVersion = CURRENT_SCHEMA_VERSION;
-  showStatusBar = true;
-
-  readonly review = new Review();
+  state: PluginState = EMPTY_STATE;
   statusBar!: StatusBar;
 
   /**
@@ -133,7 +145,7 @@ export default class ReviewPlugin extends Plugin {
 
     // Every persisted field, schemaVersion included, passes through the one
     // validator before anything reads it.
-    const normalized = normalizeData(saved);
+    const normalized = normalizeState(saved);
     const savedVersion = normalized.schemaVersion;
     const isNewer = savedVersion > CURRENT_SCHEMA_VERSION;
 
@@ -148,8 +160,10 @@ export default class ReviewPlugin extends Plugin {
 
     // Keep a newer version's number, so the file is not truncated to v2
     // if something later lifts the write block.
-    this.schemaVersion = isNewer ? savedVersion : CURRENT_SCHEMA_VERSION;
-    this.showStatusBar = normalized.showStatusBar;
+    this.state = {
+      ...normalized,
+      schemaVersion: isNewer ? savedVersion : CURRENT_SCHEMA_VERSION,
+    };
 
     // Assigned on every path, back to null included, so a reload after a
     // transient read failure lifts the block.
@@ -160,12 +174,6 @@ export default class ReviewPlugin extends Plugin {
     } else {
       this.saveBlocked = null;
     }
-
-    this.review.load(
-      normalized.reviewedPaths,
-      normalized.excludedFolders,
-      normalized.reviewStartedAt,
-    );
   };
 
   saveSettings = (): Promise<void> => {
@@ -178,15 +186,9 @@ export default class ReviewPlugin extends Plugin {
     }
 
     // Snapshot at call time, not write time: a queued write must carry the
-    // state that was current when it was requested, not whatever `review`
+    // state that was current when it was requested, not whatever `this.state`
     // holds by the time its turn comes.
-    const payload: PluginData = {
-      schemaVersion: this.schemaVersion,
-      showStatusBar: this.showStatusBar,
-      reviewedPaths: [...this.review.reviewedPaths],
-      excludedFolders: [...this.review.excludedFolders],
-      reviewStartedAt: this.review.reviewStartedAt,
-    };
+    const payload: PluginData = serialize(this.state);
 
     // Serialize, so overlapping saves land in call order. Both arms run the
     // write: a failed predecessor must not stop its successor.
@@ -227,7 +229,7 @@ export default class ReviewPlugin extends Plugin {
   };
 
   isFileEligible = (path: string): boolean => {
-    return this.review.isEligible(path);
+    return isEligible(this.state, path);
   };
 
   getEligibleFiles = (): TFile[] => {
@@ -243,11 +245,14 @@ export default class ReviewPlugin extends Plugin {
   };
 
   isReviewed = (path: string): boolean => {
-    return this.review.isReviewed(path);
+    return isReviewed(this.state, path);
   };
 
   getStats = (): ReviewStats => {
-    return this.review.stats(this.getEligibleFiles().map((f) => f.path));
+    return stats(
+      this.state,
+      this.getEligibleFiles().map((f) => f.path),
+    );
   };
 
   openReviewMenu = () => {
@@ -266,7 +271,7 @@ export default class ReviewPlugin extends Plugin {
       return;
     }
 
-    const unreviewed = eligible.filter((f) => !this.review.isReviewed(f.path));
+    const unreviewed = eligible.filter((f) => !isReviewed(this.state, f.path));
     if (!unreviewed.length) {
       new Notice("All files are reviewed");
       return;
@@ -282,7 +287,9 @@ export default class ReviewPlugin extends Plugin {
    * must not show progress that is not on disk: a refused write is declined
    * before anything changes, and a failed one is rolled back.
    */
-  private mutate = async (apply: () => void): Promise<boolean> => {
+  private mutate = async (
+    apply: (state: PluginState) => PluginState,
+  ): Promise<boolean> => {
     if (this.saveBlocked) {
       new Notice(
         `Review: ${this.saveBlocked}. Changes will not be saved until you reload.`,
@@ -294,18 +301,16 @@ export default class ReviewPlugin extends Plugin {
     // a save that was already queued from the state we are about to undo.
     await this.savePending;
 
-    const paths = [...this.review.reviewedPaths];
-    const excludedFolders = [...this.review.excludedFolders];
-    const startedAt = this.review.reviewStartedAt;
+    const prev = this.state;
 
-    apply();
+    this.state = apply(prev);
     this.statusBar.update();
 
     try {
       await this.saveSettings();
       return true;
     } catch (err) {
-      this.review.load(paths, excludedFolders, startedAt);
+      this.state = prev;
       this.statusBar.update();
       throw err;
     }
@@ -315,7 +320,7 @@ export default class ReviewPlugin extends Plugin {
     const file = this.getActiveMarkdownFile();
     if (!file) return;
 
-    const saved = await this.mutate(() => this.review.markReviewed(file.path));
+    const saved = await this.mutate((s) => markReviewed(s, file.path));
     if (saved && openNext) await this.openRandomFile();
   };
 
@@ -323,17 +328,17 @@ export default class ReviewPlugin extends Plugin {
     const file = this.getActiveMarkdownFile();
     if (!file) return;
 
-    await this.mutate(() => this.review.markUnreviewed(file.path));
+    await this.mutate((s) => markUnreviewed(s, file.path));
   };
 
   setExcludedFolders = async (list: string[]): Promise<boolean> => {
-    return this.mutate(() => this.review.setExcludedFolders(list));
+    return this.mutate((s) => setExcludedFolders(s, list));
   };
 
   resetReview = async (): Promise<boolean> => {
     if (!(await this.confirmReset())) return false;
 
-    return this.mutate(() => this.review.reset());
+    return this.mutate((s) => reset(s));
   };
 
   private confirmReset = (): Promise<boolean> => {
@@ -346,14 +351,23 @@ export default class ReviewPlugin extends Plugin {
   // The `instanceof` stays on this side of the boundary so `Review` needs no
   // Obsidian import and stays directly testable.
   private handleFileRename = async (file: TAbstractFile, oldPath: string) => {
-    if (this.review.rename(oldPath, file.path, file instanceof TFolder)) {
+    const next = renamePath(
+      this.state,
+      oldPath,
+      file.path,
+      file instanceof TFolder,
+    );
+    if (next !== this.state) {
+      this.state = next;
       this.statusBar.update();
       await this.saveSettings();
     }
   };
 
   private handleFileDelete = async (file: TAbstractFile) => {
-    if (this.review.remove(file.path, file instanceof TFolder)) {
+    const next = removePath(this.state, file.path, file instanceof TFolder);
+    if (next !== this.state) {
+      this.state = next;
       this.statusBar.update();
       await this.saveSettings();
     }
