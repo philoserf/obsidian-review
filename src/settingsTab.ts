@@ -40,7 +40,7 @@ export class ReviewSettingTab extends PluginSettingTab {
     );
   }
 
-  display(): void {
+  override display(): void {
     const { containerEl } = this;
     containerEl.empty();
 
@@ -190,7 +190,7 @@ export class ReviewSettingTab extends PluginSettingTab {
     if (this.containerEl.isShown()) this.display();
   }
 
-  hide(): void {
+  override hide(): void {
     // Cancel before committing: a keystroke inside the debounce window leaves a
     // pending call that would otherwise fire after `drafts` is null.
     this.debouncedCommit.cancel();
