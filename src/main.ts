@@ -81,7 +81,7 @@ export default class ReviewPlugin extends Plugin {
     });
   };
 
-  onload = async () => {
+  override onload = async () => {
     await this.loadSettings();
 
     this.addRibbonIcon("scan-eye", "Open review", () => {
@@ -141,7 +141,7 @@ export default class ReviewPlugin extends Plugin {
 
   loadSettings = () => this.store.reload();
 
-  onExternalSettingsChange = async () => {
+  override onExternalSettingsChange = async () => {
     // reload() joins the write queue, so a save requested before this lands
     // before it rather than on top of the state it just adopted.
     await this.loadSettings();

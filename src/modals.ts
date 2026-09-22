@@ -31,7 +31,7 @@ export class ConfirmResetModal extends Modal {
 
   // The one settlement site. close() always runs onClose, whether it came from
   // a button, Escape, or a click outside, so every dismissal lands here.
-  onClose(): void {
+  override onClose(): void {
     super.onClose();
     this.resolve(this.confirmed);
   }
