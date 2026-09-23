@@ -1,5 +1,7 @@
 # Review
 
+![Status: Stable](https://img.shields.io/badge/Status-Stable-brightgreen.svg)
+
 Randomly review your vault notes and track progress in [Obsidian](https://obsidian.md/). Originally by [Alexander](https://x.com/sashakryzh).
 
 ## You probably shouldn't install this
