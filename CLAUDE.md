@@ -16,8 +16,8 @@ The current next step for this repo is tracked in the workspace backlog at `../N
 bun test                        # all tests
 bun test src/review.test.ts     # one file
 bun test -t setExcludedFolders  # tests whose describe+test name matches
-bun run check                   # typecheck + biome (lint & format)
-bun run lint:fix                # biome check --write
+bun run check                   # typecheck + biome + prettier --check on **/*.md
+bun run lint:fix                # biome check --write + prettier --write on **/*.md
 bun run build                   # check, then bundle to main.js
 bun run dev                     # watch-mode rebuild, no check, sourcemaps
 bun run deploy                  # build, then copy main.js/manifest.json/styles.css into a vault
@@ -43,7 +43,7 @@ The plugin persists only the set of reviewed file paths, excluded folders, a sta
 
 - **`fence`** — writes are refused when `load` threw, or when `data.json` carries a `schemaVersion` newer than `CURRENT_SCHEMA_VERSION`. It is reassigned on _every_ path through `reload`, including back to `null`, so a reload lifts a transient block. A newer version's number is preserved rather than truncated to the current one. It holds the user-facing sentence, remedy included, because the two fences have different remedies and both the refusal `Notice` and the settings tab render it — the tab through the `blocked` getter, which is what makes a read-only session visible before the user tries to write.
 - **`normalizeState`** coerces rather than throwing: bad `data.json` must still render the settings tab so the user can repair it. Every field degrades to its default except `schemaVersion`, whose default reads as "not newer than me" and would switch the fence off — a version written as a string is parsed instead, and only an unreadable one falls back.
-- **`enqueue`** serializes everything that touches state or disk — commits, bare saves, and reloads — in call order. A reload joining the same queue is what stops a pending write landing on top of state just adopted from disk.
+- **`enqueue`** serializes everything that touches state or disk — commits and reloads — in call order. A reload joining the same queue is what stops a pending write landing on top of state just adopted from disk.
 - **`commit(apply)`** runs the transition _inside_ the queued critical section — and _before_ the fence check, so a transition that changes nothing is not announced as a refusal — and replaces the state only after the write resolves. So overlapping commits compose instead of racing, a refusal cannot slip in behind the fence check, and a failed write needs no rollback. It returns `false` for both a refusal and an I/O failure — the caller's question is "is this on disk?" and both answers are no. **It is the only way to change state** — the document is a private field read through a getter, and there is no bare save and no setter, so vault reconciliation and the status-bar preference go through it like everything else. That is a compiler fact, not a convention: assigning `store.state` from anywhere outside the class is a type error.
 
 Because state is adopted after the write, the status bar repaints after `saveData` resolves rather than optimistically. That is deliberate: the UI must not show progress that is not on disk.
@@ -57,10 +57,10 @@ Use the `release-gate` then `release-ship` skills — do not tag by hand. Never 
 ## Gotchas
 
 - **`main.js` is committed and CI enforces it.** `.github/workflows/main.yml` runs `bun run build` then `git diff --exit-code main.js`. Any source change — or a dependency bump, or a Bun release that shifts bundler output — must be followed by a rebuild and a commit of `main.js`, or the PR fails. `bun run dev` writes an unminified, sourcemapped `main.js`, so run `bun run build` before committing.
-- **`bun run typecheck` covers the tests too.** The `src/**/*.test.ts` exclusion was dropped when the store gained a test suite, so `tsc --noEmit` checks all of `src/`. It passes locally after `bun install` — a failure is a real failure, not an expected local artifact.
+- **`bun run typecheck` covers the tests too.** `tsconfig.json` includes all of `src/`, so `tsc --noEmit` checks the test files. It passes locally after `bun install` — a failure is a real failure, not an expected local artifact.
 - `bun run deploy` requires `OBSIDIAN_DEPLOY_DEST` (path to the plugin folder inside a vault). See `.env.local.example`; Bun auto-loads `.env.local`. It runs `build` first, so it will not copy a stale `main.js` — and it refuses to deploy at all when `check` fails, formatting drift included. Use `bun run dev` for a tight edit loop.
 - If issue descriptions (line numbers, function names, code structure) don't match the current codebase, stop and flag the discrepancy before proceeding with a fix.
 
 ## Testing
 
-`src/review.test.ts` and `src/store.test.ts` test the Obsidian-free modules directly; the clock is injectable (`markReviewed(path, now)`). Plugin integration (Obsidian API calls) is not unit-tested — verify it by deploying into a vault.
+`src/review.test.ts` and `src/store.test.ts` test the Obsidian-free modules directly; the clock is injectable (`markReviewed(state, path, now)`). Plugin integration (Obsidian API calls) is not unit-tested — verify it by deploying into a vault.
