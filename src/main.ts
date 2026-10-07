@@ -204,8 +204,10 @@ export default class ReviewPlugin extends Plugin {
     const others = unreviewed.filter((f) => f.path !== active?.path);
     const candidates = others.length ? others : unreviewed;
 
-    // Both early returns above have already established a non-empty list.
+    // Both early returns above have already established a non-empty list, so
+    // this guard never fires; it is what lets the compiler see that.
     const next = candidates[Math.floor(Math.random() * candidates.length)];
+    if (!next) return;
     await this.app.workspace.getLeaf(false).openFile(next);
   };
 

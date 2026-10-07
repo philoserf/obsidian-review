@@ -10,7 +10,10 @@ export const CURRENT_SCHEMA_VERSION = 2;
 export type PluginData = {
   schemaVersion: number;
   reviewedPaths: string[];
-  reviewStartedAt?: string;
+  // `| undefined` on purpose: no review in progress is written as
+  // `reviewStartedAt: undefined`, which JSON.stringify drops, so absent and
+  // undefined are one state on disk and in memory.
+  reviewStartedAt?: string | undefined;
   excludedFolders: string[];
   showStatusBar: boolean;
 };
@@ -28,7 +31,8 @@ export type PluginData = {
  */
 type ReviewState = {
   readonly reviewedPaths: ReadonlySet<string>;
-  readonly reviewStartedAt?: string;
+  // Absent and undefined are one state; see PluginData.
+  readonly reviewStartedAt?: string | undefined;
   readonly excludedFolders: readonly string[];
 };
 
