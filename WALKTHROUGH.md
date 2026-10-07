@@ -10,7 +10,8 @@ states — reviewed or not reviewed — and the plugin's whole job is to remembe
 you a random note that is not in it, and tell you how far through the vault you are.
 
 It answers two questions and declines the rest. `README.md` refuses ratings, schedules and
-second passes explicitly, and that refusal is why this is a 1,400-line codebase.
+second passes explicitly, and that refusal is why this is a 1,200-line codebase before its
+tests.
 
 The toolchain is Bun-only. Bun runs the tests (`bun test`), bundles `src/main.ts` into a
 committed `main.js` (`bun build`, invoked from `package.json`), and copies the built plugin
@@ -20,7 +21,8 @@ formatting are Biome; markdown is prettier.
 Three things enter this code from outside, and the walkthrough follows them in turn:
 
 1. **Obsidian loads the plugin.** It reads `manifest.json`, requires `main.js`, constructs
-   `ReviewPlugin` and calls `onload`.
+   `ReviewPlugin` and calls `onload`. The manifest's `minAppVersion` is 1.13.0, because the
+   settings tab is built on that release's declarative settings.
 2. **The user acts** — a command, the ribbon icon, the status bar, the settings tab.
 3. **The vault or the filesystem changes underneath** — a rename, a delete, or another
    device rewriting `data.json` through sync.
@@ -43,26 +45,29 @@ progress that is on disk** — which is what the store exists to guarantee.
 
 ```
 src/
-  review.ts        the persisted document, its validation, and pure transitions over it
-  store.ts         owns the state, the write fence and the write queue
-  main.ts          the Obsidian adapter: commands, events, actions
-  commands.ts      one table of review actions and their availability rule
-  statusBar.ts     status-bar item and its click menu
-  settingsTab.ts   settings pane, including the excluded-folder editor
-  modals.ts        reset confirmation, and the review menu
-  folderSuggest.ts folder autocomplete for the excluded-folder rows
+  review.ts              the persisted document, its validation, and pure transitions over it
+  store.ts               owns the state, the write fence and the write queue
+  main.ts                the Obsidian adapter: commands, events, actions
+  commands.ts            one table of review actions and their availability rule
+  statusBar.ts           status-bar item and its click menu
+  settingsDefinitions.ts the settings tab as data, and the excluded-folder row rule
+  settingsTab.ts         binds those definitions to the store
+  modals.ts              reset confirmation, the review menu, and the folder picker
 ```
 
 Dependencies point one way:
 
 ```
 review.ts  ←  store.ts  ←  main.ts  ←  commands.ts, statusBar.ts, settingsTab.ts, modals.ts
+review.ts  ←  settingsDefinitions.ts  ←  settingsTab.ts
 ```
 
 `review.ts` and `store.ts` import nothing from Obsidian. That boundary is what the entire
 test suite rests on: the tests run against the real modules with no mock. It is enforced
 rather than trusted — a Biome `noRestrictedImports` override on those two files fails
-`bun run check` if either ever imports `obsidian`.
+`bun run check` if either ever imports `obsidian`. `settingsDefinitions.ts` sits on the same
+side in practice: it imports only _types_ from Obsidian, which erase at compile time, so its
+tests need no mock either.
 
 Everything below `main.ts` depends on it only for its _type_, which is why the UI modules
 take a `ReviewPlugin` in their constructors. The one domain concept that has to cross the
@@ -96,22 +101,31 @@ other is what the code wants to work with.
 export type PluginData = {
   schemaVersion: number;
   reviewedPaths: string[];
-  reviewStartedAt?: string;
+  // `| undefined` on purpose: no review in progress is written as
+  // `reviewStartedAt: undefined`, which JSON.stringify drops, so absent and
+  // undefined are one state on disk and in memory.
+  reviewStartedAt?: string | undefined;
   excludedFolders: string[];
   showStatusBar: boolean;
 };
-
+...
 type ReviewState = {
   readonly reviewedPaths: ReadonlySet<string>;
-  readonly reviewStartedAt?: string;
+  // Absent and undefined are one state; see PluginData.
+  readonly reviewStartedAt?: string | undefined;
   readonly excludedFolders: readonly string[];
 };
-
+...
 export type PluginState = ReviewState & {
   readonly schemaVersion: number;
   readonly showStatusBar: boolean;
 };
 ```
+
+The `?: string | undefined` reads as redundant and is not. The project compiles with
+`exactOptionalPropertyTypes`, under which `?:` alone means "may be absent" but _not_ "may be
+present and undefined" — and `reset`, `normalizeState` and `serialize` all write the key as
+`undefined` to mean "no review in progress". The type now says what the code already did.
 
 Five fields, and neither split between them is arbitrary. `reviewedPaths` is membership-tested
 on every eligibility check, so in memory it is a `Set`; on disk it has to be an array. Every
@@ -198,14 +212,18 @@ and the fallback for an unreadable file are the same value.
 
 ### The only way to write an excluded folder
 
-`src/review.ts` — `normalizeFolders`
+`src/review.ts` — `normalizeFolder` and `normalizeFolders`
 
 ```ts
+export function normalizeFolder(entry: string): string {
+  return entry.trim().replace(/\/+$/, "");
+}
+
 function normalizeFolders(list: readonly string[]): string[] {
   const normalized: string[] = [];
   const seen = new Set<string>();
   for (const entry of list) {
-    const folder = entry.trim().replace(/\/+$/, "");
+    const folder = normalizeFolder(entry);
     if (!folder || seen.has(folder)) continue;
     seen.add(folder);
     normalized.push(folder);
@@ -221,8 +239,16 @@ as excluded and its notes keep appearing in review.
 
 **Three writers go through it** — `setExcludedFolders` (the UI), `normalizeState` (the disk),
 and `renamePath` (vault reconciliation, which maps entries independently and can collide two
-onto one). The docstring lives on the function rather than on any one caller, because the
-function is what the claim is about.
+onto one).
+
+The per-entry rule is split out as `normalizeFolder` and exported for one reader: the settings
+tab's row validator, which has to compare a typed value the way the store will. It is the same
+function rather than a copy, so the two cannot drift on what counts as the same folder.
+
+The "only way in" docstring that states the three-writers rule was meant to sit on
+`normalizeFolders`. Since the split it sits directly above `normalizeFolder`'s own one-line
+comment, so both blocks attach to the per-entry helper, and an editor hovering
+`normalizeFolders` shows nothing (see Findings).
 
 ## Queries
 
@@ -490,17 +516,18 @@ Three details are easy to break and each has a reason:
     );
     return run;
   };
-
+...
   reload = (): Promise<void> => this.enqueue(this.readFromDisk);
 ```
 
-Six lines, and three properties fall out of them.
+Eight lines, and three properties fall out of them.
 
 **Order.** Work runs in call order, because each new task chains onto the tail.
 
 **A failure cannot stop a successor.** The tail is `run.then(noop, noop)`, so `pending` never
-rejects — which is also why one arm suffices where a two-armed `.then(f, f)` might look
-necessary.
+rejects — which is also why `this.pending.then(fn)` needs only one arm. (The docstring above
+`enqueue` credits "the `.catch` below" for this; there is no `.catch`, and the two-armed
+`.then` is what does it — see Findings.)
 
 **Reloads are ordered against writes.** `reload` joins the same queue as `commit`. Without
 that, a save requested before a sync-triggered reload could land _after_ it and overwrite the
@@ -513,10 +540,12 @@ state just adopted from disk.
 ```ts
   commit = (apply: (state: PluginState) => PluginState): Promise<boolean> =>
     this.enqueue(async () => {
+      ...
       const next = apply(this.current);
       if (next === this.current) return true;
 
       if (this.fence) {
+        ...
         this.deps.notify(`Review: ${this.fence}`);
         return false;
       }
@@ -586,7 +615,7 @@ no re-export shim.
     warn: (message) => console.warn(`[review] ${message}`),
     onChange: () => this.statusBar?.update(),
   });
-
+...
   private readData = async (): Promise<unknown> => {
     const path = `${this.manifest.dir}/data.json`;
     if (!(await this.app.vault.adapter.exists(path))) return null;
@@ -639,7 +668,7 @@ call site goes through it and passes a label that names the action in plain word
 `src/main.ts` — `onload`
 
 ```ts
-  onload = async () => {
+  override onload = async () => {
     await this.loadSettings();
 
     this.addRibbonIcon("scan-eye", "Open review", () => {
@@ -731,13 +760,15 @@ returns `false` for both a refusal and a failed write, `saved` has exactly one m
       new Notice("All files are reviewed");
       return;
     }
-
+...
     const active = this.getActiveMarkdownFile();
     const others = unreviewed.filter((f) => f.path !== active?.path);
     const candidates = others.length ? others : unreviewed;
 
-    // Both early returns above have already established a non-empty list.
+    // Both early returns above have already established a non-empty list, so
+    // this guard never fires; it is what lets the compiler see that.
     const next = candidates[Math.floor(Math.random() * candidates.length)];
+    if (!next) return;
     await this.app.workspace.getLeaf(false).openFile(next);
 ```
 
@@ -750,6 +781,11 @@ leaf is a no-op the user reads as a broken command — with three notes left it 
 of the time. But filtering unconditionally would make the _last_ unreviewed file unopenable,
 which is worse. Hence `others.length ? others : unreviewed`.
 
+`if (!next) return;` is dead by construction, and the comment says so. Under
+`noUncheckedIndexedAccess` an array index is typed `T | undefined`, and the compiler cannot
+follow the two early returns to the conclusion that this one is in range. The guard is how
+it gets told, in place of a `!` that would assert the same thing without checking it.
+
 ### Vault reconciliation
 
 `src/main.ts` — `reconcile`, `handleFileRename` and `handleFileDelete`
@@ -760,7 +796,7 @@ which is worse. Hence `others.length ? others : unreviewed`.
     await this.commit(apply);
     if (this.state !== before) this.settingsTab?.invalidate();
   };
-
+...
   private handleFileRename = (file: TAbstractFile, oldPath: string) =>
     this.reconcile((s) =>
       renamePath(s, oldPath, file.path, file instanceof TFolder),
@@ -781,11 +817,14 @@ same reference.
 
 Telling the settings tab is the one thing that _does_ need a guard, and `commit` cannot supply
 it: it reports `true` for both "written" and "nothing to write". The state can, because it is
-replaced only when something changed — hence the reference comparison across the call. Without
-it, `invalidate()` fired on every vault event, and since it cancels the pending debounce and
-drops `drafts`, any attachment Obsidian Sync moved would wipe a half-typed excluded-folder row
-out from under the user. The comparison also skips the repaint after a refusal or a failed
-write, which is the same answer for the same reason.
+replaced only when something changed — hence the reference comparison across the call. Almost
+every vault event has nothing to do with the review — an attachment Sync moved, a note another
+plugin wrote — and the comparison keeps the tab from re-rendering for each one. It also skips
+the repaint after a refusal or a failed write, which is the same answer for the same reason.
+
+The guard predates the declarative tab, and it mattered more then: `invalidate()` used to
+throw away an edit buffer, so an unrelated vault event could wipe a half-typed row. Now
+`invalidate()` is a bare `update()`, so an unneeded call costs a re-render and nothing else.
 
 ## The command table
 
@@ -872,7 +911,7 @@ _navigates_, which is not what a checkbox in a status-bar menu means.
 ```ts
   // The one settlement site. close() always runs onClose, whether it came from
   // a button, Escape, or a click outside, so every dismissal lands here.
-  onClose(): void {
+  override onClose(): void {
     super.onClose();
     this.resolve(this.confirmed);
   }
@@ -894,7 +933,7 @@ an override rather than an instance-property assignment, which matters: assignin
       c.name.toLowerCase().includes(query.toLowerCase()),
     );
   };
-
+...
   onChooseSuggestion = (command: ReviewCommand) => {
     this.plugin.runAsync(command.run(this.plugin), command.label);
   };
@@ -903,146 +942,217 @@ an override rather than an instance-property assignment, which matters: assignin
 There is no `switch` and no per-command dispatch. The modal filters and renders; the table
 supplies the behaviour.
 
+The third modal is the folder picker the settings tab opens to add an exclusion:
+
+`src/modals.ts` — `FolderPickerModal`
+
+```ts
+/** Picks a folder to exclude from review. The vault root is not offered:
+ * excluding it would exclude everything. */
+export class FolderPickerModal extends FuzzySuggestModal<TFolder> {
+...
+  getItems(): TFolder[] {
+    return this.app.vault.getAllFolders(false);
+  }
+```
+
+`getAllFolders(false)` is the whole rule: the argument leaves out the root, the one folder
+whose exclusion would make every note ineligible. Picking hands back `folder.path`, which is
+already normalized, so a folder added this way can never be the `"Templates/"` that matches
+nothing.
+
 ### Settings tab
 
-The settings tab holds the one piece of mutable UI state in the plugin, and it needs to.
+The tab is built on Obsidian 1.13's declarative settings, and split in two along the same
+line as the rest of the plugin. `settingsDefinitions.ts` describes the tab as data — a pure
+function from what the tab shows to an array of setting definitions. `settingsTab.ts` binds
+the definitions' keys to the store. Obsidian renders the array, and re-renders it on
+`update()`.
 
-Before any of that, it renders the fence when one is up:
+`src/settingsDefinitions.ts` — `TabModel` and `TabActions`
 
 ```ts
-    const blocked = this.plugin.store.blocked;
-    if (blocked) {
-      containerEl.createDiv("review-blocked", (div) => {
-        div.createEl("strong").setText("Changes are not being saved");
-        div.createEl("p").setText(blocked);
-      });
+/** What the tab shows, read fresh on every `update()`. */
+export interface TabModel {
+  state: PluginState;
+  /** The store's read-only reason, or null when writes are allowed. */
+  blocked: string | null;
+  stats: ReviewStats;
+}
+
+/** What the tab's action rows do; the wiring supplies them. */
+export interface TabActions {
+  reset(): void;
+  addFolder(): void;
+  deleteFolder(index: number): void;
+}
+```
+
+Those two interfaces are the seam. Everything the definitions need from the plugin arrives as
+plain values and plain callbacks, so the tests construct a `TabModel` from `normalizeState`
+and record which action fired — no DOM, and no Obsidian.
+
+`src/settingsDefinitions.ts` — `reviewSettingDefinitions`, the fence and the folder list
+
+```ts
+    {
+      type: "group",
+      heading: "Changes are not being saved",
+      visible: () => blocked !== null,
+      items: [{ name: "Read-only", desc: blocked ?? "" }],
+    },
+...
+    {
+      type: "list",
+      heading: "Excluded folders",
+      emptyState:
+        "No folders excluded. Files in excluded folders do not appear in review.",
+      addItem: { name: "Exclude a folder", action: () => actions.addFolder() },
+      onDelete: (index) => actions.deleteFolder(index),
+      items: folders.map((folder, index) => ({
+        name: folder,
+        control: {
+          type: "folder" as const,
+          key: folderKey(index),
+          validate: (value: string) => validateFolderRow(folders, index, value),
+        },
+      })),
+    },
+```
+
+The fence group comes first, on purpose. The fence protects a review that cannot be
+reconstructed, and until the tab showed it the only signal was a `Notice` _after_ the user
+changed something — which is after the point where knowing would have changed what they did.
+It renders the store's sentence rather than a boolean, because the tab must not have to know
+which fence is up to say what to do about it.
+
+Between the two sit the "Review" group — "Reset review" as an action row that opens the
+confirm dialog, then the eligible and reviewed counts — and after the list, a "Status bar"
+group holding a single toggle.
+
+Each excluded folder is a row with a folder control, and the control's key is its position:
+
+`src/settingsDefinitions.ts` — `folderKey` and `parseFolderKey`
+
+```ts
+const FOLDER_KEY = "excludedFolders.";
+
+/** A list row's control key names its position: `excludedFolders.2`. */
+export function folderKey(index: number): string {
+  return `${FOLDER_KEY}${index}`;
+}
+
+export function parseFolderKey(key: string): number | null {
+  if (!key.startsWith(FOLDER_KEY)) return null;
+  const index = Number(key.slice(FOLDER_KEY.length));
+  return Number.isInteger(index) && index >= 0 ? index : null;
+}
+```
+
+Declarative settings address every control by a string key, and the store holds the folders
+as an array, so the key carries the index across. `parseFolderKey` refuses anything that is
+not a non-negative integer suffix, which keeps `excludedFolders.x` from writing slot `NaN`.
+
+The row rule is the part of the port that replaced the most code:
+
+`src/settingsDefinitions.ts` — `validateFolderRow`
+
+```ts
+/**
+ * A row may not be emptied or made a duplicate of another, so the
+ * normalization `setExcludedFolders` applies — drop empties, dedupe — never has
+ * anything to remove: a half-typed value is stored as typed, and a value that
+ * would collapse rows is rejected before it is stored.
+ */
+export function validateFolderRow(
+  folders: readonly string[],
+  index: number,
+  value: string,
+): string | undefined {
+  const folder = normalizeFolder(value);
+  if (!folder) return "Choose a folder, or delete this row.";
+  const duplicate = folders.some(
+    (other, i) => i !== index && normalizeFolder(other) === folder,
+  );
+  return duplicate ? "That folder is already excluded." : undefined;
+}
+```
+
+The problem it solves is that the visible rows _are_ the stored list, and storing goes
+through `normalizeFolders`. Without a rule, clearing a row to retype it would delete the row,
+and typing the second character of a duplicate would collapse two rows into one. The earlier
+imperative tab solved that with an edit buffer between the rows and the store, which needed a
+debounce, a cancel on close, a divergence check and a re-seed rule to keep it from writing
+back stale snapshots.
+
+Validation removes the problem rather than buffering around it. A value `validate` rejects is
+shown inline and never stored, and every value it accepts is one normalization will keep, so
+storing it cannot delete or merge a row. A half-typed value like `Te` on the way to
+`Templates` is stored as typed and briefly excludes a folder that does not exist — harmless,
+because `isEligible` matches on `${folder}/`.
+
+`normalizeFolder` is the comparison on both sides, which is why it is exported from
+`review.ts` rather than reimplemented here: `Templates/` must count as a duplicate of
+`Templates` exactly when the store would merge them.
+
+`src/settingsTab.ts` — `getControlValue` and `setControlValue`
+
+```ts
+  override getControlValue(key: string): unknown {
+    const index = parseFolderKey(key);
+    if (index !== null) return this.plugin.state.excludedFolders[index] ?? "";
+    if (key === "showStatusBar") return this.plugin.state.showStatusBar;
+    return undefined;
+  }
+
+  override setControlValue(key: string, value: unknown): void {
+    const index = parseFolderKey(key);
+    if (index !== null && typeof value === "string") {
+      const folders = [...this.plugin.state.excludedFolders];
+      folders[index] = value;
+      this.saveFolders(folders);
+    } else if (key === "showStatusBar" && typeof value === "boolean") {
+      this.save(this.plugin.setShowStatusBar(value), "save settings");
     }
+  }
 ```
 
-It is first in `display()` on purpose. The fence protects a review that cannot be
-reconstructed, and until this existed the only signal was a `Notice` _after_ the user changed
-something — which is after the point where knowing would have changed what they did. This is
-the store's only public member the plugin reads besides `state`, and it reads the sentence
-rather than a boolean, because the tab must not have to know which fence is up to say what to
-do about it.
+Reads come straight from `plugin.state`; there is no copy of the settings anywhere in the
+tab. Writes go through the plugin's actions, which go through `commit`.
 
-`src/settingsTab.ts` — `drafts` and `seeded`
-
-```ts
-  /**
-   * Excluded-folder rows as typed, before normalization — null while the tab
-   * is closed. Rows live here rather than in the plugin so a half-typed or
-   * momentarily-empty one survives on screen: setExcludedFolders drops empties
-   * and dedupes, which would otherwise delete a row out from under the user
-   * mid-word.
-   */
-  private drafts: string[] | null = null;
-
-  /**
-   * What `drafts` was seeded from. `hide()` compares against it so an untouched
-   * tab commits nothing — otherwise closing the tab writes back a snapshot that
-   * may be older than what the vault has since reconciled.
-   */
-  private seeded: string[] = [];
-```
-
-`drafts` is **not** a duplicate of the stored state — it is unnormalized text mid-edit. If the
-visible rows _were_ the stored list, clearing a row to retype it would delete the row, and
-typing the second character of a duplicate would collapse two rows into one.
-
-`seeded` exists because the buffer has a lifetime problem. Three things change the excluded
-folders from outside the tab — a vault rename, a vault delete, an external reload — and the
-tab was holding a pre-change snapshot it would write back on close.
-
-`src/settingsTab.ts` — `invalidate` and `hide`
+`src/settingsTab.ts` — `invalidate` and `save`
 
 ```ts
   invalidate(): void {
-    this.debouncedCommit.cancel();
-    this.drafts = null;
-    if (this.containerEl.isShown()) this.display();
+    this.update();
   }
-
-  hide(): void {
-    this.debouncedCommit.cancel();
-
-    if (this.drafts && this.drafts.join("\n") !== this.seeded.join("\n")) {
-      this.commit();
-    }
-    this.drafts = null;
+...
+  private save(write: Promise<unknown>, label: string): void {
+    this.plugin.runAsync(
+      write.then(() => this.update()),
+      label,
+    );
   }
 ```
 
-Three mechanisms, each closing a different hole:
+**Every write is followed by `update()`, whatever it returned.** That one line is how the tab
+keeps the plugin's rule that the UI shows only what is on disk. Obsidian moves a toggle on
+click, before anyone knows whether the write will land, so the switch is a claim about disk
+made before disk was consulted. Re-rendering from `plugin.state` after the commit settles
+withdraws the claim when it was false: a fenced session or a failed save redraws the stored
+value, not the attempted one, and the tab never contradicts the banner at the top of itself.
 
-- **`cancel()` in `hide()`.** The 500 ms debouncer would otherwise fire after `drafts = null`.
-- **The divergence check.** An untouched tab commits nothing, so it cannot revert a
-  reconciliation that happened while it was open.
-- **`invalidate()`.** Called from `onExternalSettingsChange`, and from `reconcile` when a
-  vault rename or delete actually moved the stored state — the places that change the folders
-  from outside. The "actually" is load-bearing: an unconditional call here throws away a
-  half-typed row for a vault event that had nothing to do with the review.
+The imperative tab needed a re-entrancy flag to do the same thing for the status-bar toggle,
+because `setValue` re-entered `onChange`. Re-rendering does not call back into
+`setControlValue`, so the flag went with the buffer.
 
-The re-seed trigger is deliberately _"state changed and the tab did not cause it"_, never
-_"`display()` ran"_. The tab calls `display()` itself after adding a row and after the trash
-button; re-seeding there would make a just-added empty row vanish and a just-deleted one
-reappear before its commit lands.
-
-`src/settingsTab.ts` — the row's `onChange`
-
-```ts
-          // Only the draft changes per keystroke; normalization runs once the
-          // debounce fires, so typing a second "Templates" cannot collapse two
-          // visible rows into one entry mid-word.
-          text.onChange((value) => {
-            drafts[i] = value;
-            this.debouncedCommit();
-          });
-```
-
-`src/settingsTab.ts` — the `Status bar` toggle
-
-```ts
-        let correcting = false;
-
-        toggle.onChange((value) => {
-          if (correcting) return;
-
-          this.plugin.runAsync(
-            this.plugin.setShowStatusBar(value).then((saved) => {
-              if (saved) return;
-              correcting = true;
-              toggle.setValue(this.plugin.state.showStatusBar);
-              correcting = false;
-            }),
-            "save settings",
-          );
-        });
-```
-
-The last control in the tab, and the one that says most about the whole design. Obsidian moves
-the switch on click, before anyone knows whether the write will land, so the switch is a claim
-about disk made before disk was consulted. When the claim turns out false — a fenced session, a
-failed save — it is withdrawn. Otherwise the tab contradicts the banner at the top of itself.
-
-`correcting` is not defensive habit. `setValue` re-enters `onChange` synchronously, which the
-typings do not say and the `TextComponent` above behaves as though it does not; it was verified
-in a vault. Without the flag the correction asks to store the value already stored, and today
-that terminates only because a transition changing nothing returns the same reference and
-`commit` reports success. Termination resting on a distant invariant is not termination —
-`THEORY.md` lists "making a transition return a fresh object unconditionally" among the changes
-a maintainer is most likely to make, and every test would survive it while this switch span
-forever.
-
-### Folder autocomplete
-
-`src/folderSuggest.ts` is fourteen lines and subclasses Obsidian's `AbstractInputSuggest`,
-which supplies the dropdown, the keyboard handling and the `onSelect` callback. Only the
-search and the rendering are the plugin's.
+`invalidate()` is how the plugin reports a change the tab did not cause — a vault rename or
+delete from `reconcile`, or an external reload from `onExternalSettingsChange`. With nothing
+buffered there is nothing to throw away, so it is just a re-render.
 
 ## Tests
 
-Two files, 70 tests, no Obsidian mock.
+Three files, 86 tests, no Obsidian mock.
 
 `src/review.test.ts` covers the domain module directly. Its helper is worth reading, because
 it explains a real trap:
@@ -1088,17 +1198,39 @@ leaves the state unchanged and reports `false`; a `load` that throws sets the fe
 refuses the next commit; a second reload lifts a transient fence; overlapping commits compose;
 a failed write does not stop its successor; and a reload queued behind a write lands after it.
 
-Nothing tests `main.ts` or the UI modules — they import Obsidian, and the project keeps no
-mock by choice. Those paths are verified by deploying into a vault.
+`src/settingsDefinitions.test.ts` tests the settings tab as the data it now is:
+
+`src/settingsDefinitions.test.ts` — `model`
+
+```ts
+// The tab is data (#193), so it is tested as data: no DOM and no Obsidian.
+function model(over: Partial<TabModel> = {}): TabModel {
+  return {
+    state: normalizeState({ excludedFolders: ["Templates", "Archive"] }),
+    blocked: null,
+    stats: { eligible: 10, reviewed: 4, percentCompleted: 40 },
+    ...over,
+  };
+}
+```
+
+It asserts the shape — the fence group is visible only while `blocked` is set, the folders are
+a list of folder controls keyed by position, add and delete reach the actions — and pins
+`validateFolderRow` from both sides: a half-typed value is accepted, while emptying a row or
+duplicating another is rejected, each test named for the normalization it would otherwise
+trip.
+
+Nothing tests `main.ts`, `settingsTab.ts` or the other UI modules — they import Obsidian, and
+the project keeps no mock by choice. Those paths are verified by deploying into a vault.
 
 ## Build and release
 
 `package.json` — scripts
 
 ```jsonc
-"dev": "bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --sourcemap=linked --watch",
-"build": "bun run check && bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --minify",
-"check": "bun run typecheck && biome check . && prettier --check \"**/*.md\"",
+    "dev": "bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --sourcemap=linked --watch",
+    "build": "bun run check && bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --minify",
+    "check": "bun run typecheck && biome check . && prettier --check \"**/*.md\"",
 ```
 
 `obsidian` and `electron` are external because Obsidian provides them at runtime. `check` is
@@ -1115,9 +1247,13 @@ to run without a `minAppVersion` — because `JSON.stringify` drops `undefined`,
 `versions.json` entry would otherwise vanish while the script reported success.
 
 Releases are cut by pushing a bare `x.y.z` tag, which runs `.github/workflows/release.yml`.
-That workflow asserts the tag equals `manifest.json`'s version before building — Obsidian
-keys installs off the manifest, so a mismatch would install as the manifest's version and no
-longer match the release it came from.
+That workflow asserts the tag equals the version in `package.json` and `manifest.json`, and
+that `versions.json` has a row for it, before installing anything — Obsidian keys installs off
+the manifest, so a mismatch would install as the manifest's version and no longer match the
+release it came from. It then builds, and fails if the fresh `main.js` differs from the
+committed one: the release asset must be the bundle the repository ships, not a rebuild that
+happens to differ from it. `styles.css` is uploaded only if present, and since #197 the plugin
+has none.
 
 ## Where the linear order broke down
 
@@ -1131,23 +1267,42 @@ explaining the plugin requires having already read the store. The cycle is small
 `onChange?: () => void` type keeps it honest, but there is no order that avoids the
 forward reference.
 
-**The settings tab's `drafts` cannot be explained where it is declared.** The field makes no
-sense until you know three separate things: that `setExcludedFolders` normalizes, that a
-debouncer sits between a keystroke and a commit, and that the vault can change the folders
-while the tab is open. Those are declared in three different files, and the buffer's whole
-justification lives in the gaps between them.
+**A settings control's key is defined in one file and given meaning in another.**
+`settingsDefinitions.ts` names each control by a string (`excludedFolders.2`, `showStatusBar`),
+and only `settingsTab.ts`'s `getControlValue`/`setControlValue` say what those strings read
+and write. Reading the definitions, you have to take the keys on trust until the wiring;
+reading the wiring, you have to go back to see which keys exist. `folderKey` and
+`parseFolderKey` keep the folder half honest by living beside each other; `showStatusBar` is
+a bare literal on both sides.
+
+The previous pass named the imperative tab's edit buffer here, whose justification lived in
+the gaps between three files. #197 deleted the buffer, and with it that break in the order.
 
 ## Findings
 
-Three were filed by this pass — [#163](https://github.com/philoserf/obsidian-review/issues/163), [#164](https://github.com/philoserf/obsidian-review/issues/164) and [#165](https://github.com/philoserf/obsidian-review/issues/165) — and all three are now closed.
+This pass, for 2.5.0, extended the document in place rather than replacing it. Fifteen of its
+thirty-three quoted snippets no longer matched their source. Five had been broken by this
+release — the declarative settings port (#197) and the stricter compiler flags (#196) — and
+are rewritten, along with the settings-tab section, which described an edit buffer, a debounce
+and a `folderSuggest.ts` that no longer exist. The other ten had never been verbatim: they
+skipped code without marking it, so they were stale at 2.4.0 already. Each now carries an
+explicit `...`, and every labelled snippet was checked as a verbatim substring of its file
+after formatting. All of that was corrected in place.
 
-The prose of the previous `WALKTHROUGH.md` was stale in most of its sections — it documented
-`src/data.ts`, `src/plugin.ts`, `build.ts`, the `Review` class and `mutate`, none of which
-exist. That is not filed as a finding because this pass replaced the document, which is the
-fix.
+Two findings in the source were filed:
+
+- The "only way in" docstring written for `normalizeFolders` now attaches to `normalizeFolder`,
+  since #197 inserted the new helper between them — [#198](https://github.com/philoserf/obsidian-review/issues/198).
+- `enqueue`'s docstring credits "the `.catch` below" for keeping the queue's tail from
+  rejecting; there is no `.catch`, and the two-armed `.then` does it — [#199](https://github.com/philoserf/obsidian-review/issues/199).
+
+The previous pass's three findings (#163, #164, #165) are all closed.
 
 ## Index
 
-No open findings from this pass.
+| #   | Severity | Issue                                                                                                                        | Primary location |
+| --- | -------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| 1   | low      | `normalizeFolders` docstring attaches to `normalizeFolder` — [#198](https://github.com/philoserf/obsidian-review/issues/198) | `src/review.ts`  |
+| 2   | low      | `enqueue` docstring cites a `.catch` that does not exist — [#199](https://github.com/philoserf/obsidian-review/issues/199)   | `src/store.ts`   |
 
-**Total: 0 issues**
+**Total: 2 issues (0 critical, 0 high, 0 medium, 2 low)**

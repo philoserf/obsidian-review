@@ -29,7 +29,7 @@ Every markdown file in your vault is either **reviewed** or **not reviewed**. Th
 
 **Status bar** shows "Reviewed" or "Not reviewed" for the active file. Click to change.
 
-**Excluded folders** let you skip folders you don't want to review (templates, daily notes, etc.). Configure in settings with folder autocomplete.
+**Excluded folders** let you skip folders you don't want to review (templates, daily notes, etc.). Add them in settings from a folder picker. Requires Obsidian 1.13.0 or later.
 
 **Reset** clears all review progress when you're ready to start over. Excluded folders are preserved.
 
