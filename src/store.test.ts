@@ -183,7 +183,7 @@ describe("commit", () => {
 
     expect(await h.store.commit((s) => markReviewed(s, "a.md"))).toBe(true);
     expect(h.writes).toHaveLength(1);
-    expect(h.writes[0].reviewedPaths).toEqual(["a.md"]);
+    expect(h.writes[0]?.reviewedPaths).toEqual(["a.md"]);
   });
 });
 

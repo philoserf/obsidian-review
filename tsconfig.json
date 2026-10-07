@@ -9,6 +9,8 @@
     "types": ["bun", "node"],
     "noEmit": true,
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
     "skipLibCheck": true
   },
   "include": ["src/**/*.ts", "deploy.ts", "version-bump.ts"]

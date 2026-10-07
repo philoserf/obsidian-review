@@ -103,11 +103,11 @@ export class ReviewSettingTab extends PluginSettingTab {
       .setName("Excluded folders")
       .setDesc("Files in these folders will not appear in review.");
 
-    for (let i = 0; i < drafts.length; i++) {
+    for (const [i, draft] of drafts.entries()) {
       new Setting(containerEl)
         .setClass("review-excluded-folder")
         .addText((text) => {
-          text.setValue(drafts[i]);
+          text.setValue(draft);
           // Only the draft changes per keystroke; normalization runs once the
           // debounce fires, so typing a second "Templates" cannot collapse two
           // visible rows into one entry mid-word.
