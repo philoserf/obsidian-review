@@ -6,5 +6,5 @@ if (!dest) {
   process.exit(1);
 }
 
-await $`cp main.js manifest.json styles.css ${dest}`;
+await $`cp main.js manifest.json ${dest}`;
 console.log(`Deployed to ${dest}`);

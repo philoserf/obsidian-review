@@ -20,14 +20,14 @@ bun run check                   # typecheck + biome + prettier --check on **/*.m
 bun run lint:fix                # biome check --write + prettier --write on **/*.md
 bun run build                   # check, then bundle to main.js
 bun run dev                     # watch-mode rebuild, no check, sourcemaps
-bun run deploy                  # build, then copy main.js/manifest.json/styles.css into a vault
+bun run deploy                  # build, then copy main.js/manifest.json into a vault
 ```
 
 ## Architecture
 
 ### The boundary
 
-`src/review.ts` (the persisted shape, its validation, and the pure transitions over it) and `src/store.ts` (the state, the write fence and the write queue) import nothing from Obsidian and hold all the logic worth testing. Everything Obsidian-facing lives in `src/main.ts` and the UI modules it owns (`statusBar.ts`, `settingsTab.ts`, `modals.ts`, `folderSuggest.ts`). `src/commands.ts` is the one table of review actions and their availability rule, read by the command palette, the review menu and the status-bar menu — adding an action means editing one array. The plugin class lives in `src/main.ts`, named for the bundle Obsidian loads rather than re-exported into it.
+`src/review.ts` (the persisted shape, its validation, and the pure transitions over it) and `src/store.ts` (the state, the write fence and the write queue) import nothing from Obsidian and hold all the logic worth testing. Everything Obsidian-facing lives in `src/main.ts` and the UI modules it owns (`statusBar.ts`, `settingsTab.ts`, `modals.ts`). `src/settingsDefinitions.ts` builds the declarative settings tab as data and imports only types from Obsidian, so it is tested directly; `settingsTab.ts` is its wiring to the store. `src/commands.ts` is the one table of review actions and their availability rule, read by the command palette, the review menu and the status-bar menu — adding an action means editing one array. The plugin class lives in `src/main.ts`, named for the bundle Obsidian loads rather than re-exported into it.
 
 Keep `review.ts` and `store.ts` import-free — there is no Obsidian mock, and adding one would mean the boundary has leaked. A Biome `noRestrictedImports` override on those two files enforces it, so importing `obsidian` there fails `bun run check` rather than eroding one `import type` at a time. The file-vs-folder distinction crosses as a boolean, so `instanceof TFolder` stays in `main.ts`.
 
@@ -52,7 +52,7 @@ Fire-and-forget UI callbacks go through `plugin.runAsync(promise, label)` so rej
 
 ### Release process
 
-Use the `release-gate` then `release-ship` skills — do not tag by hand. Never hand-create GitHub releases: pushing a `x.y.z` tag runs `.github/workflows/release.yml`, which attaches `main.js`, `manifest.json`, and `styles.css`. `version-bump.ts` syncs `manifest.json` and `versions.json` from `package.json`.
+Use the `release-gate` then `release-ship` skills — do not tag by hand. Never hand-create GitHub releases: pushing a `x.y.z` tag runs `.github/workflows/release.yml`, which attaches `main.js` and `manifest.json` (and `styles.css`, if the plugin ever has one again). `version-bump.ts` syncs `manifest.json` and `versions.json` from `package.json`.
 
 ## Gotchas
 
@@ -63,4 +63,4 @@ Use the `release-gate` then `release-ship` skills — do not tag by hand. Never 
 
 ## Testing
 
-`src/review.test.ts` and `src/store.test.ts` test the Obsidian-free modules directly; the clock is injectable (`markReviewed(state, path, now)`). Plugin integration (Obsidian API calls) is not unit-tested — verify it by deploying into a vault.
+`src/review.test.ts`, `src/store.test.ts` and `src/settingsDefinitions.test.ts` test the Obsidian-free modules directly; the clock is injectable (`markReviewed(state, path, now)`). Plugin integration (Obsidian API calls) is not unit-tested — verify it by deploying into a vault.
