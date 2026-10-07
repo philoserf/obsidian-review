@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.0
+
+### Changed
+
+- **Requires Obsidian 1.13.0 or later.** The settings tab is rebuilt on Obsidian's declarative settings, so it looks and behaves like the core settings tabs, and Settings search now finds the plugin's options (#197)
+- Excluded folders are added from a folder picker rather than typed into a blank row, and each row offers folder suggestions as you type (#197)
+- A row that is empty, or names a folder already excluded, says so inline and is not saved, instead of the row quietly disappearing or two rows collapsing into one while you type (#197)
+- The "changes are not being saved" notice in the settings tab is a native settings group, no longer a red-tinted block. The plugin no longer ships a `styles.css` (#197)
+- The TypeScript compiler now checks indexed access and optional properties strictly; `data.json` is unchanged (#188, #196)
+- CI, release and Dependabot workflows follow the plugin template, and the release asset is checked against the committed `main.js` (#185, #195)
+
 ## 2.4.0
 
 ### Added
