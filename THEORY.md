@@ -216,26 +216,19 @@ rejected promise from a command handler vanishes with no console line and no use
 sign. It looks like ceremony around every call site; it is the only thing making failures
 observable.
 
-**`ReviewSettingTab.drafts`, which is the seam most likely to be "cleaned up" into a bug.**
-The excluded-folder rows are held as typed, unnormalized, separate from the stored state. That
-is _not_ a duplicate copy of state and merging it back is not a simplification. Normalization
-drops empties and dedupes, so if the visible rows were the stored list, clearing a row to
-retype it would delete the row, and typing the second character of a duplicate would collapse
-two rows into one mid-word.
+**The excluded-folder rows have no edit buffer, because validation makes one unnecessary.**
+Normalization drops empties and dedupes, so if a row could hold an empty or duplicate value,
+clearing a row to retype it would delete the row, and typing a duplicate would collapse two rows
+into one mid-word. The imperative tab answered that with a buffer of typed rows, whose lifetime
+took three mechanisms to get right. The declarative tab (#193) answers it at the source: each
+row is a folder control whose `validate` (`validateFolderRow`) refuses an empty value and a
+duplicate, and a refused value is never stored. Every value that does reach the store is one
+normalization keeps unchanged, so the rows shown and the rows stored cannot diverge, and the tab
+renders straight from the store. New rows arrive through a folder picker, never as an empty row.
 
-The buffer is right; its _lifetime_ was the hard part, and the current answer took three
-mechanisms. The debouncer is cancelled on close, or a keystroke inside the last 500 ms fires
-after the buffer is nulled and persists an empty list. The close only commits when the rows
-diverge from what the tab was seeded with, or an untouched tab left open across a vault rename
-writes the pre-rename list back over the reconciled one. And `invalidate()` drops the buffer
-when something outside the tab changes the folders — only when it genuinely did, because the
-call is what throws a half-typed row away, and most vault events have nothing to do with the
-review.
-
-The re-seed trigger is deliberately **"state changed and the tab did not cause it"**, never
-"`display()` ran". The tab calls `display()` itself after adding a row and after the trash
-button; re-seeding there would make a just-added empty row vanish and a just-deleted one
-reappear before its commit lands.
+`getSettingDefinitions()` has no side effects, because Obsidian also calls it once when the tab
+is registered, to build the settings search index. Anything it read lazily and cached would be
+seeded before the user ever opened the tab.
 
 ### The one place two principles genuinely conflict
 
@@ -314,8 +307,9 @@ Ranked by how likely the mistake is and how quiet the damage:
    Two things now lean on the reference-equality signal rather than one: `commit` uses it to
    write nothing when nothing changed, and `reconcile` uses it to decide whether the settings
    tab has to be told.
-3. **Merging `drafts` into the stored state.** It reads as removing a redundant copy. It
-   restores the mid-word row-deletion bug.
+3. **Loosening `validateFolderRow`.** Letting a row be emptied or duplicated reads as being
+   less strict. It restores the mid-word row-deletion bug, since normalization then has
+   something to remove.
 4. **Moving `excludedFolders` out of the shared value**, into something that feels more like
    settings. It stops being reconciled, and excluded folders silently stop excluding after a
    rename.

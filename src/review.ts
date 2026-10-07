@@ -67,11 +67,16 @@ export type PluginState = ReviewState & {
  * (vault reconciliation, which maps entries independently and can collide two
  * onto one).
  */
+/** One excluded-folder entry as stored: trimmed, without trailing slashes. */
+export function normalizeFolder(entry: string): string {
+  return entry.trim().replace(/\/+$/, "");
+}
+
 function normalizeFolders(list: readonly string[]): string[] {
   const normalized: string[] = [];
   const seen = new Set<string>();
   for (const entry of list) {
-    const folder = entry.trim().replace(/\/+$/, "");
+    const folder = normalizeFolder(entry);
     if (!folder || seen.has(folder)) continue;
     seen.add(folder);
     normalized.push(folder);

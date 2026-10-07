@@ -268,12 +268,10 @@ export default class ReviewPlugin extends Plugin {
    * applying a rename in memory whether or not it can be written, was written
    * down and rejected for the reason above.
    *
-   * Telling the settings tab is a different question, because `invalidate`
-   * throws away a half-typed row. Almost every vault event has nothing to do
-   * with the review — an attachment Sync moved, a note another plugin wrote —
-   * and a user mid-word in a new excluded-folder row should not lose it to
-   * one. So it fires only when the reconciliation actually moved something,
-   * which is exactly what a replaced state means.
+   * The settings tab re-renders only when the reconciliation actually moved
+   * something, which is exactly what a replaced state means. Almost every
+   * vault event has nothing to do with the review — an attachment Sync moved,
+   * a note another plugin wrote — and needs no re-render.
    */
   private reconcile = async (apply: (state: PluginState) => PluginState) => {
     const before = this.state;

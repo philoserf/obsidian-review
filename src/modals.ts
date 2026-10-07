@@ -1,4 +1,11 @@
-import { type App, Modal, Setting, SuggestModal } from "obsidian";
+import {
+  type App,
+  FuzzySuggestModal,
+  Modal,
+  Setting,
+  SuggestModal,
+  type TFolder,
+} from "obsidian";
 import { availableCommands, type ReviewCommand } from "./commands";
 import type ReviewPlugin from "./main";
 
@@ -65,4 +72,28 @@ export class ReviewMenuModal extends SuggestModal<ReviewCommand> {
   onChooseSuggestion = (command: ReviewCommand) => {
     this.plugin.runAsync(command.run(this.plugin), command.label);
   };
+}
+
+/** Picks a folder to exclude from review. The vault root is not offered:
+ * excluding it would exclude everything. */
+export class FolderPickerModal extends FuzzySuggestModal<TFolder> {
+  private onPick: (path: string) => void;
+
+  constructor(app: App, onPick: (path: string) => void) {
+    super(app);
+    this.onPick = onPick;
+    this.setPlaceholder("Folder to exclude from review");
+  }
+
+  getItems(): TFolder[] {
+    return this.app.vault.getAllFolders(false);
+  }
+
+  getItemText(folder: TFolder): string {
+    return folder.path;
+  }
+
+  onChooseItem(folder: TFolder): void {
+    this.onPick(folder.path);
+  }
 }
