@@ -57,7 +57,7 @@ Use the `release-gate` then `release-ship` skills — do not tag by hand. A rele
 ## Gotchas
 
 - **`main.js` is committed, and nothing automated checks it.** Any source change — or a dependency bump, or a Bun release that shifts bundler output — must be followed by `bun run build` and a commit of `main.js`; `git diff --exit-code main.js` after a build should be clean. `bun run dev` writes an unminified, sourcemapped `main.js`, so run `bun run build` before committing.
-- **`bun run typecheck` covers the tests too.** `tsconfig.json` includes all of `src/`, so `tsc --noEmit` checks the test files. It passes locally after `bun install` — a failure is a real failure, not an expected local artifact.
+- **`bun run typecheck` covers the tests too.** `tsconfig.json` includes all of `src/`, so `bun --check` checks the test files. It is `bun --check`, not `bun check`: the bare subcommand runs this package's own `check` script, which calls `typecheck` and would loop. It passes locally after `bun install` — a failure is a real failure, not an expected local artifact.
 - `bun run deploy` requires `OBSIDIAN_DEPLOY_DEST` (path to the plugin folder inside a vault). See `.env.local.example`; Bun auto-loads `.env.local`. It runs `build` first, so it will not copy a stale `main.js` — and it refuses to deploy at all when `check` fails, formatting drift included. Use `bun run dev` for a tight edit loop.
 - If issue descriptions (line numbers, function names, code structure) don't match the current codebase, stop and flag the discrepancy before proceeding with a fix.
 
