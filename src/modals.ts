@@ -1,15 +1,14 @@
 import {
   type App,
+  ConfirmationModal,
   FuzzySuggestModal,
-  Modal,
-  Setting,
   SuggestModal,
   type TFolder,
 } from "obsidian";
 import { availableCommands, type ReviewCommand } from "./commands";
 import type ReviewPlugin from "./main";
 
-export class ConfirmResetModal extends Modal {
+export class ConfirmResetModal extends ConfirmationModal {
   private confirmed = false;
   private resolve: (confirmed: boolean) => void;
 
@@ -18,22 +17,21 @@ export class ConfirmResetModal extends Modal {
     this.resolve = resolve;
 
     this.setTitle("Reset review?");
+    this.setContent(
+      "This action cannot be undone. All review progress will be lost.",
+    );
 
-    new Setting(this.contentEl)
-      .setName("This action cannot be undone")
-      .setDesc("All review progress will be lost.")
-      .addButton((btn) => {
-        btn.setButtonText("Cancel");
-        btn.onClick(() => this.close());
-      })
-      .addButton((btn) => {
-        btn.setButtonText("Reset");
-        btn.setWarning();
-        btn.onClick(() => {
+    // The handler returns nothing, so the button closes the modal itself.
+    this.addButton((btn) =>
+      btn
+        .setButtonText("Reset")
+        .setDestructive()
+        .setCta()
+        .onClick(() => {
           this.confirmed = true;
-          this.close();
-        });
-      });
+        }),
+    );
+    this.addCancelButton();
   }
 
   // The one settlement site. close() always runs onClose, whether it came from
