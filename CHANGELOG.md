@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.6.0
+
+### Changed
+
+- "Reset review" asks for confirmation in Obsidian's standard confirmation dialog, with Reset as a red destructive button, instead of a hand-built settings row (#208)
+- Development dependencies are updated, including the Obsidian typings to 1.14.4. The plugin still requires Obsidian 1.13.0 (#209)
+- Type checking runs on `bun --check` instead of `tsc --noEmit` (#205)
+- The CI, release and Dependabot workflows are removed. The local gate is the only check, and releases are cut from a local checkout (#203, #204)
+
 ## 2.5.0
 
 ### Changed
