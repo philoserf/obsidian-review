@@ -53,7 +53,7 @@ export class Store {
    */
   private fence: string | null = null;
 
-  /** Tail of the serialized write queue. Never rejects — see the catch below. */
+  /** Tail of the serialized write queue. Never rejects — see `enqueue`. */
   private pending: Promise<void> = Promise.resolve();
 
   constructor(private deps: StoreDeps) {}
@@ -121,8 +121,8 @@ export class Store {
 
   /**
    * Everything that touches state or disk runs through here, in call order.
-   * One arm is enough: the `.catch` below means the tail never rejects, so a
-   * failed predecessor cannot stop its successor.
+   * One arm is enough: the two-armed `.then` below means the tail never
+   * rejects, so a failed predecessor cannot stop its successor.
    */
   private enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
     const run = this.pending.then(fn);
