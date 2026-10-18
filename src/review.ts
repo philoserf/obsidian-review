@@ -59,6 +59,11 @@ export type PluginState = ReviewState & {
   readonly showStatusBar: boolean;
 };
 
+/** One excluded-folder entry as stored: trimmed, without trailing slashes. */
+export function normalizeFolder(entry: string): string {
+  return entry.trim().replace(/\/+$/, "");
+}
+
 /**
  * The only way in. A folder that is not trimmed of whitespace or stripped of
  * trailing slashes matches nothing, silently, because `isEligible` tests for a
@@ -67,11 +72,6 @@ export type PluginState = ReviewState & {
  * (vault reconciliation, which maps entries independently and can collide two
  * onto one).
  */
-/** One excluded-folder entry as stored: trimmed, without trailing slashes. */
-export function normalizeFolder(entry: string): string {
-  return entry.trim().replace(/\/+$/, "");
-}
-
 function normalizeFolders(list: readonly string[]): string[] {
   const normalized: string[] = [];
   const seen = new Set<string>();
