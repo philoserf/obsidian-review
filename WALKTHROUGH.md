@@ -15,7 +15,7 @@ tests.
 
 The toolchain is Bun-only. Bun runs the tests (`bun test`), bundles `src/main.ts` into a
 committed `main.js` (`bun build`, invoked from `package.json`), and copies the built plugin
-into a vault (`deploy.ts`). Type checking is `tsc --noEmit`; TypeScript linting and
+into a vault (`deploy.ts`). Type checking is `bun --check`; TypeScript linting and
 formatting are Biome; markdown is prettier.
 
 Three things enter this code from outside, and the walkthrough follows them in turn:
@@ -245,10 +245,8 @@ The per-entry rule is split out as `normalizeFolder` and exported for one reader
 tab's row validator, which has to compare a typed value the way the store will. It is the same
 function rather than a copy, so the two cannot drift on what counts as the same folder.
 
-The "only way in" docstring that states the three-writers rule was meant to sit on
-`normalizeFolders`. Since the split it sits directly above `normalizeFolder`'s own one-line
-comment, so both blocks attach to the per-entry helper, and an editor hovering
-`normalizeFolders` shows nothing (see Findings).
+The "only way in" docstring that states the three-writers rule sits on `normalizeFolders`, the
+function the rule is about; `normalizeFolder` carries only its one-line comment.
 
 ## Queries
 
@@ -525,9 +523,8 @@ Eight lines, and three properties fall out of them.
 **Order.** Work runs in call order, because each new task chains onto the tail.
 
 **A failure cannot stop a successor.** The tail is `run.then(noop, noop)`, so `pending` never
-rejects — which is also why `this.pending.then(fn)` needs only one arm. (The docstring above
-`enqueue` credits "the `.catch` below" for this; there is no `.catch`, and the two-armed
-`.then` is what does it — see Findings.)
+rejects — which is also why `this.pending.then(fn)` needs only one arm, as the docstring
+above `enqueue` says.
 
 **Reloads are ordered against writes.** `reload` joins the same queue as `commit`. Without
 that, a save requested before a sync-triggered reload could land _after_ it and overwrite the
@@ -917,9 +914,14 @@ _navigates_, which is not what a checkbox in a status-bar menu means.
   }
 ```
 
-Cancel just calls `close()`; Reset sets `confirmed = true` and then calls `close()`. Because
-`close()` always runs `onClose`, every dismissal — including Escape and clicking outside —
-resolves the promise exactly once, with no bookkeeping flag. The `super.onClose()` call is
+The modal extends Obsidian's `ConfirmationModal` (since 1.13.0). Reset is a
+`setDestructive().setCta()` button whose handler only sets `confirmed = true`. It returns
+nothing, and a `ConfirmationButton` closes the modal itself unless its handler returns
+something truthy. Cancel comes from `addCancelButton()` and closes with `confirmed` still
+`false`. Because `close()` always runs `onClose`, every dismissal resolves the promise exactly
+once, with no bookkeeping flag. Escape and a click outside are meant to take the same path,
+as the comment says, but neither has been checked in a vault since the move to
+`ConfirmationModal` in #208. The `super.onClose()` call is
 an override rather than an instance-property assignment, which matters: assigning to
 `modal.onClose` shadows the base implementation instead of extending it.
 
@@ -1234,10 +1236,11 @@ the project keeps no mock by choice. Those paths are verified by deploying into 
 ```
 
 `obsidian` and `electron` are external because Obsidian provides them at runtime. `check` is
-non-mutating on purpose — `build` runs it and so does the release workflow; `lint:fix` is the
-writing counterpart.
+non-mutating on purpose — `build` runs it, so a build cannot quietly reformat what it bundles;
+`lint:fix` is the writing counterpart.
 
-**`main.js` is committed**, and CI enforces that it matches a fresh build. The repository is
+**`main.js` is committed**, and nothing automated checks that it matches a fresh build. The
+release gate's "Clean after build" row does, at release time. The repository is
 cloned directly into a vault, which is the workflow the committed bundle serves. Any source
 change, dependency bump, or Bun release that shifts bundler output must be followed by a
 rebuild and a commit of `main.js`.
@@ -1246,14 +1249,13 @@ rebuild and a commit of `main.js`.
 to run without a `minAppVersion` — because `JSON.stringify` drops `undefined`, the
 `versions.json` entry would otherwise vanish while the script reported success.
 
-Releases are cut by pushing a bare `x.y.z` tag, which runs `.github/workflows/release.yml`.
-That workflow asserts the tag equals the version in `package.json` and `manifest.json`, and
-that `versions.json` has a row for it, before installing anything — Obsidian keys installs off
-the manifest, so a mismatch would install as the manifest's version and no longer match the
-release it came from. It then builds, and fails if the fresh `main.js` differs from the
-committed one: the release asset must be the bundle the repository ships, not a rebuild that
-happens to differ from it. `styles.css` is uploaded only if present, and since #197 the plugin
-has none.
+There is no CI and no release workflow since #203 and #204. Releases are cut from a local
+checkout: the release gate checks that `package.json`, `manifest.json` and `versions.json`
+agree on the version and that a fresh build leaves `main.js` unchanged, and the release is
+created with `gh release create` from the tagged commit, attaching `main.js` and
+`manifest.json`. The version check matters because Obsidian keys installs off the manifest, so
+a mismatch would install as the manifest's version and no longer match the release it came
+from. Since #197 the plugin has no `styles.css`.
 
 ## Where the linear order broke down
 
@@ -1280,7 +1282,13 @@ the gaps between three files. #197 deleted the buffer, and with it that break in
 
 ## Findings
 
-This pass, for 2.5.0, extended the document in place rather than replacing it. Fifteen of its
+The 2.6.0 pass edited the document in place. The two docstring findings below are fixed
+(#206, #207), and the prose that described them is gone; the modal section now describes
+`ConfirmationModal` (#208); and the release section describes the local release, since #204
+removed the workflows. No new findings were filed. Escape and click-outside on the reset
+dialog remain unchecked in a vault, as the modal section says.
+
+The 2.5.0 pass extended the document in place rather than replacing it. Fifteen of its
 thirty-three quoted snippets no longer matched their source. Five had been broken by this
 release — the declarative settings port (#197) and the stricter compiler flags (#196) — and
 are rewritten, along with the settings-tab section, which described an edit buffer, a debounce
@@ -1289,20 +1297,15 @@ skipped code without marking it, so they were stale at 2.4.0 already. Each now c
 explicit `...`, and every labelled snippet was checked as a verbatim substring of its file
 after formatting. All of that was corrected in place.
 
-Two findings in the source were filed:
+It filed two findings in the source, both since fixed:
 
 - The "only way in" docstring written for `normalizeFolders` now attaches to `normalizeFolder`,
   since #197 inserted the new helper between them — [#198](https://github.com/philoserf/obsidian-review/issues/198).
 - `enqueue`'s docstring credits "the `.catch` below" for keeping the queue's tail from
   rejecting; there is no `.catch`, and the two-armed `.then` does it — [#199](https://github.com/philoserf/obsidian-review/issues/199).
 
-The previous pass's three findings (#163, #164, #165) are all closed.
+The 2.4.0 pass's three findings (#163, #164, #165) are all closed.
 
 ## Index
 
-| #   | Severity | Issue                                                                                                                        | Primary location |
-| --- | -------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| 1   | low      | `normalizeFolders` docstring attaches to `normalizeFolder` — [#198](https://github.com/philoserf/obsidian-review/issues/198) | `src/review.ts`  |
-| 2   | low      | `enqueue` docstring cites a `.catch` that does not exist — [#199](https://github.com/philoserf/obsidian-review/issues/199)   | `src/store.ts`   |
-
-**Total: 2 issues (0 critical, 0 high, 0 medium, 2 low)**
+No open findings.
