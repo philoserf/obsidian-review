@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.6.1
+
+### Changed
+
+- Markdown formatting runs on Bun's built-in `bun fmt` instead of prettier, dropping the last formatter dependency outside Bun and Biome (#211, #212)
+- Development dependencies are updated: Biome to 2.6.3 and the Bun typings to 1.4.4. The bundled `main.js` is unchanged (#213, #214)
+
 ## 2.6.0
 
 ### Changed

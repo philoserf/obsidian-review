@@ -919,9 +919,9 @@ The modal extends Obsidian's `ConfirmationModal` (since 1.13.0). Reset is a
 nothing, and a `ConfirmationButton` closes the modal itself unless its handler returns
 something truthy. Cancel comes from `addCancelButton()` and closes with `confirmed` still
 `false`. Because `close()` always runs `onClose`, every dismissal resolves the promise exactly
-once, with no bookkeeping flag. Escape and a click outside are meant to take the same path,
-as the comment says, but neither has been checked in a vault since the move to
-`ConfirmationModal` in #208. The `super.onClose()` call is
+once, with no bookkeeping flag. Escape and a click outside take the same path, as the
+comment says: both were checked in a test vault after the move to `ConfirmationModal` in
+#208, and both close the dialog without resetting. The `super.onClose()` call is
 an override rather than an instance-property assignment, which matters: assigning to
 `modal.onClose` shadows the base implementation instead of extending it.
 
@@ -1282,11 +1282,16 @@ the gaps between three files. #197 deleted the buffer, and with it that break in
 
 ## Findings
 
+The 2.6.1 pass edited the document in place. #212 had already brought the prettier
+references and the quoted `package.json` snippet over to `bun fmt`. The modal section now
+records that Escape and click-outside on the reset dialog were checked in a test vault and
+close it without resetting. No new findings were filed.
+
 The 2.6.0 pass edited the document in place. The two docstring findings below are fixed
 (#206, #207), and the prose that described them is gone; the modal section now describes
 `ConfirmationModal` (#208); and the release section describes the local release, since #204
 removed the workflows. No new findings were filed. Escape and click-outside on the reset
-dialog remain unchecked in a vault, as the modal section says.
+dialog were left unchecked in a vault; the 2.6.1 pass records that check.
 
 The 2.5.0 pass extended the document in place rather than replacing it. Fifteen of its
 thirty-three quoted snippets no longer matched their source. Five had been broken by this
