@@ -8,9 +8,9 @@
   "scripts": {
     "dev": "bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --sourcemap=linked --watch",
     "build": "bun run check && bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --minify",
-    "check": "bun run typecheck && biome check . && prettier --check \"**/*.md\"",
+    "check": "bun run typecheck && biome check . && bun fmt --check \"**/*.md\"",
     "typecheck": "bun --check",
-    "lint:fix": "biome check --write . && prettier --write \"**/*.md\"",
+    "lint:fix": "biome check --write . && bun fmt \"**/*.md\"",
     "version": "bun run version-bump.ts",
     "test": "bun test",
     "deploy": "bun run build && bun run deploy.ts"
@@ -20,7 +20,6 @@
     "@types/bun": "^1.4.3",
     "@types/node": "^26.6.5",
     "obsidian": "^1.14.4",
-    "prettier": "^3.9.10",
     "typescript": "^7.0.2"
   }
 }

@@ -16,7 +16,7 @@ tests.
 The toolchain is Bun-only. Bun runs the tests (`bun test`), bundles `src/main.ts` into a
 committed `main.js` (`bun build`, invoked from `package.json`), and copies the built plugin
 into a vault (`deploy.ts`). Type checking is `bun --check`; TypeScript linting and
-formatting are Biome; markdown is prettier.
+formatting are Biome; markdown is `bun fmt`.
 
 Three things enter this code from outside, and the walkthrough follows them in turn:
 
@@ -1232,7 +1232,7 @@ the project keeps no mock by choice. Those paths are verified by deploying into 
 ```jsonc
     "dev": "bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --sourcemap=linked --watch",
     "build": "bun run check && bun build src/main.ts --outdir . --format cjs --external obsidian --external electron --minify",
-    "check": "bun run typecheck && biome check . && prettier --check \"**/*.md\"",
+    "check": "bun run typecheck && biome check . && bun fmt --check \"**/*.md\"",
 ```
 
 `obsidian` and `electron` are external because Obsidian provides them at runtime. `check` is
