@@ -16,8 +16,8 @@ The current next step for this repo is tracked in the workspace backlog at `../N
 bun test                        # all tests
 bun test src/review.test.ts     # one file
 bun test -t setExcludedFolders  # tests whose describe+test name matches
-bun run check                   # typecheck + biome + prettier --check on **/*.md
-bun run lint:fix                # biome check --write + prettier --write on **/*.md
+bun run check                   # typecheck + biome + bun fmt --check on **/*.md
+bun run lint:fix                # biome check --write + bun fmt on **/*.md
 bun run build                   # check, then bundle to main.js
 bun run dev                     # watch-mode rebuild, no check, sourcemaps
 bun run deploy                  # build, then copy main.js/manifest.json into a vault
