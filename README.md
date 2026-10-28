@@ -1,6 +1,8 @@
 # Review
 
-![Status: Stable](https://img.shields.io/badge/Status-Stable-brightgreen.svg)
+![Status: Archived](https://img.shields.io/badge/Status-Archived-lightgrey.svg)
+
+> **Archived 2026-10-27.** This plugin is retired and no longer maintained. Its one known installation has removed it. 2.6.1 is the final release. The code stays available under the MIT license.
 
 Randomly review your vault notes and track progress in [Obsidian](https://obsidian.md/). Originally by [Alexander](https://x.com/sashakryzh).
 
